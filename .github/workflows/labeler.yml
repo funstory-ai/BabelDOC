@@ -20,6 +20,6 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Run Labeler
-        uses: crazy-max/ghaction-github-labeler@3de87da19416edc45c90cd89e7a4ea922a3aae5a # v4.1.0
+        uses: crazy-max/ghaction-github-labeler@b54af0c25861143e7c8813d7cbbf46d2c341680c # v5.1.0
         with:
           skip-delete: true
