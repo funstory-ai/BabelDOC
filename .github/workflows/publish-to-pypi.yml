@@ -145,7 +145,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish the release notes
-        uses: release-drafter/release-drafter@09c613e259eb8d4e7c81c2cb00618eb5fc4575a7 # v5.25.0
+        uses: release-drafter/release-drafter@b1476f6e6eb133afa41ed8589daba6dc69b4d3f5 # v6.1.0
         with:
           publish: ${{ needs.build.outputs.is_release != '' }}
           tag: ${{ needs.build.outputs.is_release }}
