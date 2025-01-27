@@ -28,7 +28,7 @@ jobs:
     outputs:
       is_release: ${{ steps.check-version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4.1.1
+      - uses: actions/checkout@v4
         with:
           persist-credentials: true
           fetch-depth: 2
@@ -138,7 +138,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4.1.1
+      - uses: actions/checkout@v4
         with:
           persist-credentials: true
           fetch-depth: 2
