@@ -8,9 +8,10 @@ if exist ".venv\" (
     echo 输入 exit 退出
     cmd /k "echo 当前工作目录: %cd% && title BabelDOC环境"
 ) else (
-    echo 错误: 虚拟环境不存在于：
-    echo %cd%\.venv
-    echo 请先执行以下命令创建：
-    echo python -m venv .venv
-    pause
+    echo [BabelDOC] 正在初始化环境...
+    uv run babeldoc --help
+    python -m venv .venv
+    echo [BabelDOC] 正在激活新建的虚拟环境...
+    call .venv\Scripts\activate.bat
+    cmd /k "echo 环境已准备就绪！输入命令开始使用 && title BabelDOC环境"
 )
