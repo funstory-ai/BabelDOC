@@ -8,7 +8,10 @@ from peewee import Model
 from peewee import SqliteDatabase
 from peewee import TextField
 
-from babeldoc.const import CACHE_FOLDER as cache_folder
+from babeldoc.const import CACHE_FOLDER
+
+# Convert CACHE_FOLDER to Path object
+cache_folder = Path(CACHE_FOLDER)
 
 # we don't init the database here
 db = SqliteDatabase(None)
