@@ -189,6 +189,11 @@ def create_parser():
         default=0.1,
         help="Progress report interval in seconds (default: 0.1)",
     )
+    translation_group.add_argument(
+        "--paper",
+        action="store_true",
+        help="Extract and use the paper title in translation prompts to improve context.",
+    )
     # service option argument group
     service_group = translation_group.add_mutually_exclusive_group()
     service_group.add_argument(
@@ -381,6 +386,7 @@ async def main():
             report_interval=args.report_interval,
             min_text_length=args.min_text_length,
             watermark_output_mode=watermark_output_mode,
+            use_paper_title=args.paper,
         )
 
         # Create progress handler

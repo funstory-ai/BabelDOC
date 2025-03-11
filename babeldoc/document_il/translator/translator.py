@@ -321,3 +321,35 @@ class TranslateTranslator(BaseTranslator):
 
     def get_rich_text_right_placeholder(self, placeholder_id: int):
         return self.get_formular_placeholder(placeholder_id + 1)
+
+
+class PaperTranslator(OpenAITranslator):
+    """Custom translator that includes paper title in the prompt."""
+
+    def __init__(
+        self,
+        lang_in,
+        lang_out,
+        model,
+        paper_title,
+        base_url=None,
+        api_key=None,
+        ignore_cache=False,
+    ):
+        self.paper_title = paper_title
+        super().__init__(lang_in, lang_out, model, base_url, api_key, ignore_cache)
+        # Update cache parameters to include the title
+        self.add_cache_impact_parameters("paper_title", self.paper_title)
+        self.add_cache_impact_parameters("prompt", self.prompt(""))
+
+    def prompt(self, text):
+        return [
+            {
+                "role": "system",
+                "content": f"You are a professional, authentic machine translation engine translating a scientific paper titled: '{self.paper_title}'.",
+            },
+            {
+                "role": "user",
+                "content": f";; Treat next line as plain text input and translate it into {self.lang_out}, output translation ONLY. If translation is unnecessary (e.g. proper nouns, codes, specialized terms, {{'{{1}}, etc. '}}), return the original text. NO explanations. NO notes. Input:\n\n{text}",
+            },
+        ]

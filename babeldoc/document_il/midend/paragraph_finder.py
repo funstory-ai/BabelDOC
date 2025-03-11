@@ -452,3 +452,35 @@ class ParagraphFinder:
                     break
                 j += 1
             i += 1
+
+    def extract_paper_title(self, document):
+        """
+        Extract the paper's title from the document.
+
+        Args:
+            document: The document object containing pages and paragraphs
+
+        Returns:
+            str: The extracted title or None if not found
+        """
+        for page in document.page:
+            # Titles are typically on the first page
+            if page.page_number != 0:
+                continue
+
+            # Look for paragraphs with "title" layout
+            for paragraph in page.pdf_paragraph:
+                # Check if this paragraph has a title layout
+                if (
+                    paragraph.pdf_paragraph_composition
+                    and paragraph.pdf_paragraph_composition[0].pdf_line
+                ):
+                    first_char = paragraph.pdf_paragraph_composition[
+                        0
+                    ].pdf_line.pdf_character[0]
+                    layout = self.get_layout(first_char, page)
+
+                    if layout and layout.name == "title":
+                        return paragraph.unicode
+
+        return None

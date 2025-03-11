@@ -51,6 +51,7 @@ class TranslationConfig:
         use_side_by_side_dual: bool = True,  # Deprecated: 是否使用拼版式双语 PDF（并排显示原文和译文） 向下兼容选项，已停用。
         use_alternating_pages_dual: bool = False,
         watermark_output_mode: WatermarkOutputMode = WatermarkOutputMode.Watermarked,
+        use_paper_title: bool = False,
     ):
         self.translator = translator
 
@@ -90,6 +91,7 @@ class TranslationConfig:
         self.report_interval = report_interval
         self.min_text_length = min_text_length
         self.use_alternating_pages_dual = use_alternating_pages_dual
+        self.use_paper_title = use_paper_title
 
         # for backward compatibility
         if use_side_by_side_dual is False and use_alternating_pages_dual is False:

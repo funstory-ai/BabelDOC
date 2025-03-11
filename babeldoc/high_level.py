@@ -35,6 +35,8 @@ from babeldoc.document_il.midend.paragraph_finder import ParagraphFinder
 from babeldoc.document_il.midend.remove_descent import RemoveDescent
 from babeldoc.document_il.midend.styles_and_formulas import StylesAndFormulas
 from babeldoc.document_il.midend.typesetting import Typesetting
+from babeldoc.document_il.translator.translator import OpenAITranslator
+from babeldoc.document_il.translator.translator import PaperTranslator
 from babeldoc.document_il.utils.fontmap import FontMapper
 from babeldoc.document_il.xml_converter import XMLConverter
 from babeldoc.pdfinterp import PDFPageInterpreterEx
@@ -345,6 +347,8 @@ def do_translate(pm, translation_config):
                 translation_config.get_working_file_path("layout_generator.json"),
             )
         ParagraphFinder(translation_config).process(docs)
+        paper_title = ParagraphFinder(translation_config).extract_paper_title(docs)
+
         logger.debug(f"finish paragraph finder from {temp_pdf_path}")
         if translation_config.debug:
             xml_converter.write_json(
@@ -366,6 +370,28 @@ def do_translate(pm, translation_config):
                 translation_config.get_working_file_path("remove_descent.json"),
             )
         translate_engine = translation_config.translator
+
+        if translation_config.use_paper_title:
+            # Use paper title in translation if enabled and translator is OpenAITranslator
+            if not paper_title:
+                logger.error("No paper title found")
+            else:
+                logger.info(f"Using paper title in translation: {paper_title}")
+            if (
+                paper_title
+                and translation_config.use_paper_title
+                and isinstance(translate_engine, OpenAITranslator)
+            ):
+                translate_engine = PaperTranslator(
+                    lang_in=translate_engine.lang_in,
+                    lang_out=translate_engine.lang_out,
+                    model=translate_engine.model,
+                    paper_title=paper_title,
+                    base_url=getattr(translate_engine.client, "base_url", None),
+                    api_key=getattr(translate_engine.client, "api_key", None),
+                    ignore_cache=translate_engine.ignore_cache,
+                )
+
         ILTranslator(translate_engine, translation_config).translate(docs)
         logger.debug(f"finish ILTranslator from {temp_pdf_path}")
         if translation_config.debug:
