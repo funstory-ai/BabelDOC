@@ -17,6 +17,7 @@
 ### 二、申请流程
 #### **申请条件**
    - PR 需被成功合并至[funstory-ai/BabelDOC](https://github.com/funstory-ai/BabelDOC/pulls) 仓库或 [Byaidu/PDFMathTranslate](https://github.com/Byaidu/PDFMathTranslate/pulls)的主分支。
+   - 若目标为 [funstory-ai/BabelDOC](https://github.com/funstory-ai/BabelDOC/pulls) 的 PR 未被合并，但被维护者认定为有价值的概念验证，同样符合条件。
    - 审核 PR、撰写 wiki 等贡献也必须是以上两个仓库。
    - 同一贡献者每月仅可申请一次（无论提交 PR 数量）
    - 同一贡献者每月最多可以获得 1 个兑换码
