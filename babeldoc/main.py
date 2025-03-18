@@ -79,6 +79,7 @@ def create_parser():
         "-p",
         help="Pages to translate. If not set, translate all pages. like: 1,2,1-,-3,3-5",
     )
+
     translation_group.add_argument(
         "--min-text-length",
         type=int,
@@ -211,6 +212,15 @@ def create_parser():
         "-k",
         help="The API key for the OpenAI API.",
     )
+    service_group.add_argument(
+        "--enhanced-prompt",
+        action="store_true", 
+        help="Enable enhanced prompt mode using XML template",
+    )
+    service_group.add_argument(
+        "--prompt-template",
+        help="Path to XML prompt template file",
+    )
 
     return parser
 
@@ -338,6 +348,8 @@ async def main():
             report_interval=args.report_interval,
             min_text_length=args.min_text_length,
             watermark_output_mode=watermark_output_mode,
+            enhanced_prompt=args.enhanced_prompt,
+            prompt_template=args.prompt_template,
         )
 
         # Create progress handler

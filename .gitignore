@@ -33,3 +33,4 @@ examples/
 /.cursor
 /xnotes
 /docs/workflow-rules.md
+config.toml

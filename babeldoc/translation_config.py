@@ -32,6 +32,8 @@ class TranslationConfig:
         pages: str | None = None,
         output_dir: str | Path | None = None,
         debug: bool = False,
+        enhanced_prompt: bool = False,
+        prompt_template: str | Path | None = None,
         working_dir: str | Path | None = None,
         no_dual: bool = False,
         no_mono: bool = False,
@@ -59,6 +61,10 @@ class TranslationConfig:
         self.lang_out = lang_out
         # just ignore font
         self.font = None
+        
+        # LLM prompt template settings
+        self.enhanced_prompt = enhanced_prompt
+        self.prompt_template = prompt_template
 
         self.pages = pages
         self.page_ranges = self._parse_pages(pages) if pages else None

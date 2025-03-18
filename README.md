@@ -168,6 +168,18 @@ uv run babeldoc --files example.pdf --files example2.pdf --openai --openai-model
 > 1. This tool supports any OpenAI-compatible API endpoints. Just set the correct base URL and API key. (e.g. `https://xxx.custom.xxx/v1`)
 > 2. For local models like Ollama, you can use any value as the API key (e.g. `--openai-api-key a`).
 
+### LLM Enhance Options
+- `--enhanced-prompt `Enable enhanced prompts with XML templates to improve translate (default : false)
+- `--enhance.plus.xml` Advanced xml template,s Path
+
+>[!TIP] 
+> 
+> + Using enhanced prompts can significantly improve translation quality and make disconnected paragraphs flow more continuously. See `enhance.plus.xml` for example templates. The prompt templates use built-in variable controls and logic controls. 
+>   + Some available variables: ` ${langFrom} ${langTo} ${contentType} ${prevParagraphs} ${nextParagraphs} ${sourceText}`
+>   + Logic controls: `<if_paragraph></if_paragraph> <if_caption></if_caption> ... `Only prompts within the corresponding type tags will be kept, others will be removed
+
+
+
 ### Output Control
 
 - `--output`, `-o`: Output directory for translated files. If not set, use current working directory.
