@@ -553,3 +553,18 @@ class ILTranslatorLLMOnly:
         text = re.sub(r'\s+', ' ', text)
         
         return text.strip()
+
+    def _clean_json_output(self, llm_output: str) -> str:
+        # Clean up JSON output by removing common wrapper tags
+        llm_output = llm_output.strip()
+        if llm_output.startswith("<json>"):
+            llm_output = llm_output[6:]
+        if llm_output.endswith("</json>"):
+            llm_output = llm_output[:-7]
+        if llm_output.startswith("```json"):
+            llm_output = llm_output[7:]
+        if llm_output.startswith("```"):
+            llm_output = llm_output[3:]
+        if llm_output.endswith("```"):
+            llm_output = llm_output[:-3]
+        return llm_output.strip()
