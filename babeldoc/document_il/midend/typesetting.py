@@ -148,7 +148,7 @@ class TypesettingUnit:
         return True
 
     @property
-    def is_chinese_char(self):
+    def is_cjk_char(self):
         if self.formular:
             return False
         unicode = self.try_get_unicode()
@@ -185,14 +185,17 @@ class TypesettingUnit:
         ]:
             return True
         if unicode:
-            try:
-                unicodedata_name = unicodedata.name(unicode)
-                return (
-                    "CJK UNIFIED IDEOGRAPH" in unicodedata_name
-                    or "FULLWIDTH" in unicodedata_name
-                )
-            except ValueError:
-                return False
+            o = ord(unicode)
+            return (
+                0x1100 <= o <= 0x11ff # Hangul Jamo
+                or 0x2e80 <= o <= 0x9fff # CJKs
+                or 0xa960 <= o <= 0xa97f # Hangul Jamo Extended-A
+                or 0xac00 <= o <= 0xd7ff # Hanguls
+                or 0xf900 <= o <= 0xfaff # CJK Compatibility Ideographs
+                or 0x1aff0 <= o <= 0x1b16f # Kana extended, supplement, extension
+                or 0x1f200 <= o <= 0x1f2ff # Enclosed Ideographic Supplement
+                or 0x20000 <= o <= 0x323af # CJK Unified Ideographs Extensions
+            )
         return False
 
     @property
@@ -696,7 +699,7 @@ class Typesetting:
 
             if (
                 last_unit  # 有上一个单元
-                and last_unit.is_chinese_char ^ unit.is_chinese_char  # 中英文交界处
+                and last_unit.is_cjk_char ^ unit.is_cjk_char  # 中英文交界处
                 and (
                     last_unit.box
                     and last_unit.box.y
