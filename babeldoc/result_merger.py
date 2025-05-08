@@ -94,6 +94,8 @@ class ResultMerger:
         merged_result = TranslateResult(
             mono_pdf_path=merged_mono_path,
             dual_pdf_path=merged_dual_path,
+            no_mono=self.config.no_mono,
+            no_dual=self.config.no_dual,
         )
         merged_result.no_watermark_mono_pdf_path = merged_no_watermark_mono_path
         merged_result.no_watermark_dual_pdf_path = merged_no_watermark_dual_path

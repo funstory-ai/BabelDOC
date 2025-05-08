@@ -1043,7 +1043,7 @@ class PDFCreater:
                             pretty=True,
                         )
                 pbar.advance()
-            return TranslateResult(mono_out_path, dual_out_path)
+            return TranslateResult(mono_out_path, dual_out_path, no_mono=translation_config.no_mono, no_dual=translation_config.no_dual)
         except Exception:
             logger.exception(
                 "Failed to create PDF: %s",

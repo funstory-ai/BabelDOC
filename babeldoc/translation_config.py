@@ -265,10 +265,14 @@ class TranslateResult:
     no_watermark_mono_pdf_path: str | None
     no_watermark_dual_pdf_path: str | None
     peak_memory_usage: int | None
+    no_mono: bool
+    no_dual: bool
 
-    def __init__(self, mono_pdf_path: str | None, dual_pdf_path: str | None):
+    def __init__(self, mono_pdf_path: str | None, dual_pdf_path: str | None, no_mono: bool = False, no_dual: bool = False):
         self.mono_pdf_path = mono_pdf_path
         self.dual_pdf_path = dual_pdf_path
+        self.no_mono = no_mono
+        self.no_dual = no_dual
 
         # For compatibility considerations, if only a non-watermarked PDF is generated,
         # the values of mono_pdf_path and no_watermark_mono_pdf_path are the same.
@@ -284,16 +288,17 @@ class TranslateResult:
         if hasattr(self, "total_seconds") and self.total_seconds:
             result.append(f"\tTotal time: {self.total_seconds:.2f} seconds")
 
-        if self.mono_pdf_path:
+        if self.mono_pdf_path and not self.no_mono:
             result.append(f"\tMonolingual PDF: {self.mono_pdf_path}")
 
-        if self.dual_pdf_path:
+        if self.dual_pdf_path and not self.no_dual:
             result.append(f"\tDual-language PDF: {self.dual_pdf_path}")
 
         if (
             hasattr(self, "no_watermark_mono_pdf_path")
             and self.no_watermark_mono_pdf_path
             and self.no_watermark_mono_pdf_path != self.mono_pdf_path
+            and not self.no_mono
         ):
             result.append(
                 f"\tNo-watermark Monolingual PDF: {self.no_watermark_mono_pdf_path}"
@@ -303,6 +308,7 @@ class TranslateResult:
             hasattr(self, "no_watermark_dual_pdf_path")
             and self.no_watermark_dual_pdf_path
             and self.no_watermark_dual_pdf_path != self.dual_pdf_path
+            and not self.no_dual
         ):
             result.append(
                 f"\tNo-watermark Dual-language PDF: {self.no_watermark_dual_pdf_path}"
