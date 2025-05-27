@@ -1,3 +1,5 @@
+import asyncio  
+import re  
 import contextlib
 import logging
 import threading
@@ -5,16 +7,25 @@ import time
 import unicodedata
 from abc import ABC
 from abc import abstractmethod
-
+from typing import List, Dict, Union, Optional, Tuple
+from dataclasses import dataclass
+from enum import Enum
+import time
+import aiohttp
+import json
+import requests
+from loguru import logger
+from pydantic_settings import BaseSettings
+from dataclasses import dataclass, field
 import httpx
 import openai
 from tenacity import retry
 from tenacity import retry_if_exception_type
 from tenacity import stop_after_attempt
 from tenacity import wait_exponential
-
 from babeldoc.document_il.translator.cache import TranslationCache
 from babeldoc.document_il.utils.atomic_integer import AtomicInteger
+
 
 logger = logging.getLogger(__name__)
 
@@ -289,3 +300,240 @@ class OpenAITranslator(BaseTranslator):
 
     def get_rich_text_right_placeholder(self, placeholder_id: int):
         return "</style>", r"<\s*\/\s*style\s*>"
+
+
+
+class TranslationDomain(str, Enum):
+    LEGAL = "legal"
+    LEGAL_BETA = "legal_beta"
+    GENERAL = "general"
+    PATENT = "patent"
+
+@dataclass
+class TranslationSegment:
+    segment: str
+    segment_id: int
+    paragraph_id: int = 0
+
+@dataclass
+class TranslationRequest:
+    job_id: int
+    source_language: str
+    target_language: str
+    domain: Union[str, TranslationDomain]
+    payload: List[TranslationSegment]
+
+    def to_dict(self) -> Dict:
+        return {
+            "job_id": self.job_id,
+            "source_language": self.source_language,
+            "target_language": self.target_language,
+            "domain": self.domain.value if isinstance(self.domain, TranslationDomain) else self.domain,
+            "payload": [vars(segment) for segment in self.payload]
+        }
+
+class TranslatorClient:
+    def __init__(self, base_url: str = "http://localhost:8005/"):
+        self.base_url = base_url.rstrip('/')
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    async def __aenter__(self):
+        self._session = aiohttp.ClientSession()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._session:
+            await self._session.close()
+            self._session = None
+
+    def translate(self, request: TranslationRequest) -> Dict:
+        """
+        Synchronous translation request
+        """
+        url = f"{self.base_url}/translate"
+        logger.debug(request.to_dict())
+        response = requests.post(
+            url,
+            headers={"Content-Type": "application/json"},
+            json=request.to_dict()
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def translate_async(self, request: TranslationRequest) -> Dict:
+        """
+        Asynchronous translation request
+        """
+        if not self._session:
+            self._session = aiohttp.ClientSession()
+
+        url = f"{self.base_url}/translate"
+        async with self._session.post(
+            url,
+            headers={"Content-Type": "application/json"},
+            json=request.to_dict()
+        ) as response:
+            response.raise_for_status()
+            return await response.json()
+
+# Usage examples:
+"""
+# Synchronous usage:
+client = TranslatorClient()
+request = TranslationRequest(
+    job_id=123,
+    source_language="en",
+    target_language="ko",
+    domain=TranslationDomain.LEGAL,
+    payload=[
+        TranslationSegment(
+            segment="Hello, world!",
+            segment_id=1
+        )
+    ]
+)
+result = client.translate(request)
+
+# Asynchronous usage:
+async def main():
+    async with TranslatorClient() as client:
+        request = TranslationRequest(
+            job_id=123,
+            source_language="en",
+            target_language="ko",
+            domain=TranslationDomain.LEGAL,
+            payload=[
+                TranslationSegment(
+                    segment="Hello, world!",
+                    segment_id=1
+                )
+            ]
+        )
+        result = await client.translate_async(request)
+
+# Multiple async requests:
+async def translate_multiple():
+    async with TranslatorClient() as client:
+        requests = [
+            TranslationRequest(
+                job_id=i,
+                source_language="en",
+                target_language="ko",
+                domain=TranslationDomain.LEGAL,
+                payload=[
+                    TranslationSegment(
+                        segment=f"Text {i}",
+                        segment_id=1
+                    )
+                ]
+            )
+            for i in range(3)
+        ]
+        tasks = [client.translate_async(req) for req in requests]
+        results = await asyncio.gather(*tasks)
+""" 
+
+def segment_generator() -> int:
+    """
+    Generate a unique segment ID based on the current timestamp.
+    Returns an integer representing the current time in milliseconds.
+    """
+    return int(time.time() * 1000)
+
+# if __name__ == "__main__":
+#     client = TranslatorClient()
+#     request = TranslationRequest(
+#         job_id=123,
+#         source_language="en",
+#         target_language="ko",
+#         domain=TranslationDomain.PATENT,
+#         payload=[
+#             TranslationSegment(
+#                 segment="Hello, world!",
+#                 segment_id=1
+#             )
+#         ]
+#     )
+#     result = client.translate(request)
+class BeringTranslator(BaseTranslator):
+    name = "bering"
+    CustomPrompt = True
+    #lang_in, lang_out, ignore_cache
+    def __init__(self, lang_in=None, lang_out=None, model=None, job_id = None, ignore_cache=False, rate_limit_params=None, **kwargs):
+        super().__init__(lang_in, lang_out, model, job_id, ignore_cache)
+        self.client = TranslatorClient()
+
+    def validate_translate_args(self, job_id, lang_in, lang_out, domain):
+        if not isinstance(job_id, int):
+            return False
+        if not lang_in or not lang_in.strip():
+            return False
+        if not lang_out or not lang_out.strip():
+            return False
+        if not domain or not domain.strip():
+            return False
+        return True
+
+    def parse_result(self, result: Dict) -> str:
+        """
+        Parse the translation result from the API response.
+        Expected format: {'job_id': int, 'translated_text_segment': [{'segment': str}]}
+        """
+        if not isinstance(result, dict):
+            raise ValueError("Invalid response format: expected dictionary")
+        
+        if 'translated_text_segment' not in result:
+            raise ValueError("Invalid response format: missing 'translated_text_segment'")
+            
+        segments = result['translated_text_segment']
+        if not segments or not isinstance(segments, list):
+            raise ValueError("Invalid response format: 'translated_text_segment' should be a non-empty list")
+            
+        if not segments[0].get('segment'):
+            raise ValueError("Invalid response format: missing 'segment' in translated_text_segment")
+            
+        return " ".join([segment['segment'] for segment in segments])
+
+    def do_translate(self, text, rate_limit_params: dict = None,) -> str:
+        logger.info(f"translate: {text}")
+        job_id = self.job_id or 123
+        lang_in = self.lang_in
+        lang_out = self.lang_out
+        domain = self.model
+        if not self.validate_translate_args(job_id, lang_in, lang_out, domain):
+            raise ValueError("Invalid language or domain")
+        request = TranslationRequest(
+            job_id=job_id,
+            source_language=lang_in,
+            target_language=lang_out,
+            domain=domain,
+            payload=[TranslationSegment(segment=text, 
+                                     segment_id=int(segment_generator()))]
+        )
+        result = self.client.translate(request)
+        return self.parse_result(result)
+
+    # def do_llm_translate(self, text, rate_limit_params: dict = None):
+    #     logger.info(f"translate: {text}")
+    #     job_id = self.job_id or 123
+    #     lang_in = self.lang_in
+    #     lang_out = self.lang_out
+    #     domain = self.model
+    #     if not self.validate_translate_args(job_id, lang_in, lang_out, domain):
+    #         raise ValueError("Invalid language or domain")
+    #     request = TranslationRequest(
+    #         job_id=job_id,
+    #         source_language=lang_in,
+    #         target_language=lang_out,
+    #         domain=domain,
+    #         payload=[TranslationSegment(segment=text, 
+    #                                  segment_id=int(segment_generator()))]
+    #     )
+    #     result = self.client.translate(request)
+    #     return self.parse_result(result)
+    def do_llm_translate(self, text, rate_limit_params: dict = None):
+        raise NotImplementedError("LLM translation is not supported by BeringTranslator")
+if __name__ == "__main__":
+    translator = BeringTranslator(lang_in="en", lang_out="ko", model="legal", job_id=123, ignore_cache=True)
+    result = translator.translate("Hello, world!")
+    print(result)
