@@ -633,6 +633,8 @@ def get_font_family(lang_code: str):
     lang_code = lang_code.upper()
     if "KR" in lang_code:
         font_family = KR_FONT_FAMILY
+    elif "KO" in lang_code:
+        font_family = KR_FONT_FAMILY
     elif "JP" in lang_code:
         font_family = JP_FONT_FAMILY
     elif "HK" in lang_code:
