@@ -1,5 +1,5 @@
-import asyncio  
-import re  
+import asyncio
+import re
 import contextlib
 import logging
 import threading
@@ -302,18 +302,19 @@ class OpenAITranslator(BaseTranslator):
         return "</style>", r"<\s*\/\s*style\s*>"
 
 
-
 class TranslationDomain(str, Enum):
     LEGAL = "legal"
     LEGAL_BETA = "legal_beta"
     GENERAL = "general"
     PATENT = "patent"
 
+
 @dataclass
 class TranslationSegment:
     segment: str
     segment_id: int
     paragraph_id: int = 0
+
 
 @dataclass
 class TranslationRequest:
@@ -328,13 +329,18 @@ class TranslationRequest:
             "job_id": self.job_id,
             "source_language": self.source_language,
             "target_language": self.target_language,
-            "domain": self.domain.value if isinstance(self.domain, TranslationDomain) else self.domain,
-            "payload": [vars(segment) for segment in self.payload]
+            "domain": (
+                self.domain.value
+                if isinstance(self.domain, TranslationDomain)
+                else self.domain
+            ),
+            "payload": [vars(segment) for segment in self.payload],
         }
 
+
 class TranslatorClient:
-    def __init__(self, base_url: str = "http://localhost:8005/"):
-        self.base_url = base_url.rstrip('/')
+    def __init__(self, base_url: str = "http://localhost/", port: int = 8005):
+        self.base_url = base_url.rstrip("/") + f":{port}/"
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def __aenter__(self):
@@ -353,9 +359,7 @@ class TranslatorClient:
         url = f"{self.base_url}/translate"
         logger.debug(request.to_dict())
         response = requests.post(
-            url,
-            headers={"Content-Type": "application/json"},
-            json=request.to_dict()
+            url, headers={"Content-Type": "application/json"}, json=request.to_dict()
         )
         response.raise_for_status()
         return response.json()
@@ -369,12 +373,11 @@ class TranslatorClient:
 
         url = f"{self.base_url}/translate"
         async with self._session.post(
-            url,
-            headers={"Content-Type": "application/json"},
-            json=request.to_dict()
+            url, headers={"Content-Type": "application/json"}, json=request.to_dict()
         ) as response:
             response.raise_for_status()
             return await response.json()
+
 
 # Usage examples:
 """
@@ -431,7 +434,8 @@ async def translate_multiple():
         ]
         tasks = [client.translate_async(req) for req in requests]
         results = await asyncio.gather(*tasks)
-""" 
+"""
+
 
 def segment_generator() -> int:
     """
@@ -439,6 +443,7 @@ def segment_generator() -> int:
     Returns an integer representing the current time in milliseconds.
     """
     return int(time.time() * 1000)
+
 
 # if __name__ == "__main__":
 #     client = TranslatorClient()
@@ -458,10 +463,22 @@ def segment_generator() -> int:
 class BeringTranslator(BaseTranslator):
     name = "bering"
     CustomPrompt = True
-    #lang_in, lang_out, ignore_cache
-    def __init__(self, lang_in=None, lang_out=None, model=None, job_id = None, ignore_cache=False, rate_limit_params=None, **kwargs):
+
+    # lang_in, lang_out, ignore_cache
+    def __init__(
+        self,
+        lang_in=None,
+        lang_out=None,
+        model=None,
+        job_id=None,
+        ignore_cache=False,
+        rate_limit_params=None,
+        *,
+        port: int,
+        **kwargs,
+    ):
         super().__init__(lang_in, lang_out, model, job_id, ignore_cache)
-        self.client = TranslatorClient()
+        self.client = TranslatorClient(port=port)
 
     def validate_translate_args(self, job_id, lang_in, lang_out, domain):
         if not isinstance(job_id, int):
@@ -481,20 +498,30 @@ class BeringTranslator(BaseTranslator):
         """
         if not isinstance(result, dict):
             raise ValueError("Invalid response format: expected dictionary")
-        
-        if 'translated_text_segment' not in result:
-            raise ValueError("Invalid response format: missing 'translated_text_segment'")
-            
-        segments = result['translated_text_segment']
-        if not segments or not isinstance(segments, list):
-            raise ValueError("Invalid response format: 'translated_text_segment' should be a non-empty list")
-            
-        if not segments[0].get('segment'):
-            raise ValueError("Invalid response format: missing 'segment' in translated_text_segment")
-            
-        return " ".join([segment['segment'] for segment in segments])
 
-    def do_translate(self, text, rate_limit_params: dict = None,) -> str:
+        if "translated_text_segment" not in result:
+            raise ValueError(
+                "Invalid response format: missing 'translated_text_segment'"
+            )
+
+        segments = result["translated_text_segment"]
+        if not segments or not isinstance(segments, list):
+            raise ValueError(
+                "Invalid response format: 'translated_text_segment' should be a non-empty list"
+            )
+
+        if not segments[0].get("segment"):
+            raise ValueError(
+                "Invalid response format: missing 'segment' in translated_text_segment"
+            )
+
+        return " ".join([segment["segment"] for segment in segments])
+
+    def do_translate(
+        self,
+        text,
+        rate_limit_params: dict = None,
+    ) -> str:
         logger.info(f"translate: {text}")
         job_id = self.job_id or 123
         lang_in = self.lang_in
@@ -507,8 +534,9 @@ class BeringTranslator(BaseTranslator):
             source_language=lang_in,
             target_language=lang_out,
             domain=domain,
-            payload=[TranslationSegment(segment=text, 
-                                     segment_id=int(segment_generator()))]
+            payload=[
+                TranslationSegment(segment=text, segment_id=int(segment_generator()))
+            ],
         )
         result = self.client.translate(request)
         return self.parse_result(result)
@@ -526,14 +554,20 @@ class BeringTranslator(BaseTranslator):
     #         source_language=lang_in,
     #         target_language=lang_out,
     #         domain=domain,
-    #         payload=[TranslationSegment(segment=text, 
+    #         payload=[TranslationSegment(segment=text,
     #                                  segment_id=int(segment_generator()))]
     #     )
     #     result = self.client.translate(request)
     #     return self.parse_result(result)
     def do_llm_translate(self, text, rate_limit_params: dict = None):
-        raise NotImplementedError("LLM translation is not supported by BeringTranslator")
+        raise NotImplementedError(
+            "LLM translation is not supported by BeringTranslator"
+        )
+
+
 if __name__ == "__main__":
-    translator = BeringTranslator(lang_in="en", lang_out="ko", model="legal", job_id=123, ignore_cache=True)
+    translator = BeringTranslator(
+        lang_in="en", lang_out="ko", model="legal", job_id=123, ignore_cache=True
+    )
     result = translator.translate("Hello, world!")
     print(result)

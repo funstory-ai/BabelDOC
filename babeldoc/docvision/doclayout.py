@@ -286,7 +286,7 @@ class OnnxModel(DocLayoutModel):
             with self.lock:
                 # pix = mupdf_doc[page.page_number].get_pixmap(dpi=72)
                 pix = get_no_rotation_img(mupdf_doc[page.page_number])
-            image = np.fromstring(pix.samples, np.uint8).reshape(
+            image = np.frombuffer(pix.samples, np.uint8).reshape(
                 pix.height,
                 pix.width,
                 3,
