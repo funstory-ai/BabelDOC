@@ -678,8 +678,255 @@ class Typesetting:
     def __init__(self, translation_config: TranslationConfig):
         self.font_mapper = FontMapper(translation_config)
         self.translation_config = translation_config
+        self.lang_code = self.translation_config.lang_out.upper()
+        self.is_cjk = (
+            # Why zh-CN/zh-HK/zh-TW here but not zh-Hans and so on?
+            # See https://funstory-ai.github.io/BabelDOC/supported_languages/
+            ("ZH" in self.lang_code)  # C
+            or ("JP" in self.lang_code)  # J
+            or ("KR" in self.lang_code)  # K
+            or ("CN" in self.lang_code)
+            or ("HK" in self.lang_code)
+            or ("TW" in self.lang_code)
+        )
+        # 添加用于存储文档所有段落缩放因子的列表
+        self.document_scales: list[float] = []
+        # 添加段落计数器，用于在实际排版时获取对应的 scale 值
+        self._current_paragraph_index: int = 0
+
+    def preprocess_document(self, document: il_version_1.Document):
+        """预处理文档，获取每个段落的最优缩放因子，不执行实际排版"""
+        self.document_scales = []
+
+        for page in document.page:
+            # 准备字体信息（复制自 render_page 的逻辑）
+            fonts: dict[
+                str | int,
+                il_version_1.PdfFont | dict[str, il_version_1.PdfFont],
+            ] = {f.font_id: f for f in page.pdf_font}
+            page_fonts = {f.font_id: f for f in page.pdf_font}
+            for k, v in self.font_mapper.fontid2font.items():
+                fonts[k] = v
+            for xobj in page.pdf_xobject:
+                if xobj.xobj_id is not None:
+                    fonts[xobj.xobj_id] = page_fonts.copy()
+                    for font in xobj.pdf_font:
+                        if xobj.xobj_id in fonts and isinstance(
+                            fonts[xobj.xobj_id], dict
+                        ):
+                            fonts[xobj.xobj_id][font.font_id] = font
+
+            # 处理每个段落
+            for paragraph in page.pdf_paragraph:
+                try:
+                    typesetting_units = self.create_typesetting_units(paragraph, fonts)
+
+                    # 如果所有单元都可以直接传递，则 scale = 1.0
+                    if all(unit.can_passthrough for unit in typesetting_units):
+                        self.document_scales.append(1.0)
+                    else:
+                        # 获取最优缩放因子
+                        optimal_scale = self._get_optimal_scale(
+                            paragraph, page, typesetting_units
+                        )
+                        self.document_scales.append(optimal_scale)
+                except Exception as e:
+                    # 如果预处理出错，默认使用 1.0 缩放因子
+                    logger.warning(f"预处理段落时出错: {e}")
+                    self.document_scales.append(1.0)
+
+        # 获取缩放因子的众数
+        if self.document_scales:
+            mode_scale = statistics.mode(self.document_scales)
+            # 将所有大于众数的值修改为众数
+            for i in range(len(self.document_scales)):
+                if self.document_scales[i] > mode_scale:
+                    self.document_scales[i] = mode_scale
+        else:
+            logger.error(
+                "document_scales is empty, there seems no paragraph in this PDF"
+            )
+
+    def _find_optimal_scale_and_layout(
+        self,
+        paragraph: il_version_1.PdfParagraph,
+        page: il_version_1.Page,
+        typesetting_units: list[TypesettingUnit],
+        initial_scale: float = 1.0,
+        use_english_line_break: bool = True,
+        apply_layout: bool = False,
+    ) -> tuple[float, list[TypesettingUnit] | None]:
+        """查找最优缩放因子并可选择性地执行布局
+
+        Args:
+            paragraph: 段落对象
+            page: 页面对象
+            typesetting_units: 排版单元列表
+            initial_scale: 初始缩放因子
+            use_english_line_break: 是否使用英文换行规则
+            apply_layout: 是否应用布局到paragraph（True时执行实际排版）
+
+        Returns:
+            tuple[float, list[TypesettingUnit] | None]: (最终缩放因子, 排版后的单元列表或None)
+        """
+        if not paragraph.box:
+            return initial_scale, None
+
+        box = paragraph.box
+        scale = initial_scale
+        line_skip = 1.50 if self.is_cjk else 1.3
+        min_scale = 0.1
+        expand_space_flag = 0
+        final_typeset_units = None
+
+        while scale >= min_scale:
+            try:
+                # 尝试布局排版单元
+                typeset_units, all_units_fit = self._layout_typesetting_units(
+                    typesetting_units,
+                    box,
+                    scale,
+                    line_skip,
+                    paragraph,
+                    use_english_line_break,
+                )
+
+                # 如果所有单元都放得下
+                if all_units_fit:
+                    if apply_layout:
+                        # 实际应用排版结果
+                        paragraph.scale = scale
+                        paragraph.pdf_paragraph_composition = []
+                        for unit in typeset_units:
+                            for char in unit.render():
+                                paragraph.pdf_paragraph_composition.append(
+                                    PdfParagraphComposition(pdf_character=char),
+                                )
+                        final_typeset_units = typeset_units
+                    return scale, final_typeset_units
+            except Exception:
+                # 如果布局检查出错，继续尝试下一个缩放因子
+                pass
+
+            # 添加与原 retypeset 一致的逻辑检查
+            if not hasattr(paragraph, "debug_id") or not paragraph.debug_id:
+                return scale, final_typeset_units
+
+            # 减小缩放因子
+            if scale > 0.6:
+                scale -= 0.05
+            else:
+                scale -= 0.1
+
+            if scale < 0.7:
+                space_expanded = False  # 标记是否成功扩展了空间
+
+                if expand_space_flag == 0:
+                    # 尝试向下扩展
+                    try:
+                        min_y = self.get_max_bottom_space(box, page) + 2
+                        if min_y < box.y:
+                            expanded_box = Box(x=box.x, y=min_y, x2=box.x2, y2=box.y2)
+                            box = expanded_box
+                            if apply_layout:
+                                # 更新段落的边界框
+                                paragraph.box = expanded_box
+                            space_expanded = True
+                    except Exception:
+                        pass
+                    expand_space_flag = 1
+
+                    # 只有成功扩展空间时才continue，否则继续减小scale
+                    if space_expanded:
+                        continue
+
+                elif expand_space_flag == 1:
+                    # 尝试向右扩展
+                    try:
+                        max_x = self.get_max_right_space(box, page) - 5
+                        if max_x > box.x2:
+                            expanded_box = Box(x=box.x, y=box.y, x2=max_x, y2=box.y2)
+                            box = expanded_box
+                            if apply_layout:
+                                # 更新段落的边界框
+                                paragraph.box = expanded_box
+                            space_expanded = True
+                    except Exception:
+                        pass
+                    expand_space_flag = 2
+
+                    # 只有成功扩展空间时才continue，否则继续减小scale
+                    if space_expanded:
+                        continue
+
+                # 只有在扩展尝试阶段(expand_space_flag < 2)且扩展失败时才重置scale
+                # 当expand_space_flag >= 2时，说明已经尝试过所有扩展，应该继续正常的scale减小
+                if expand_space_flag < 2:
+                    # 如果无法扩展空间，重置scale并继续循环
+                    scale = 1.0
+
+        # 如果仍然放不下，尝试去除英文换行限制
+        if use_english_line_break:
+            return self._find_optimal_scale_and_layout(
+                paragraph,
+                page,
+                typesetting_units,
+                initial_scale,
+                use_english_line_break=False,
+                apply_layout=apply_layout,
+            )
+
+        # 最后返回最小缩放因子
+        return min_scale, final_typeset_units
+
+    def _get_optimal_scale(
+        self,
+        paragraph: il_version_1.PdfParagraph,
+        page: il_version_1.Page,
+        typesetting_units: list[TypesettingUnit],
+        use_english_line_break: bool = True,
+    ) -> float:
+        """获取段落的最优缩放因子，不执行实际排版"""
+        scale, _ = self._find_optimal_scale_and_layout(
+            paragraph,
+            page,
+            typesetting_units,
+            1.0,
+            use_english_line_break,
+            apply_layout=False,
+        )
+        return scale
+
+    def retypeset_with_precomputed_scale(
+        self,
+        paragraph: il_version_1.PdfParagraph,
+        page: il_version_1.Page,
+        typesetting_units: list[TypesettingUnit],
+        precomputed_scale: float,
+        use_english_line_break: bool = True,
+    ):
+        """使用预计算的缩放因子进行排版"""
+        if not paragraph.box:
+            return
+
+        # 使用通用方法进行排版，传入预计算的缩放因子作为初始值
+        self._find_optimal_scale_and_layout(
+            paragraph,
+            page,
+            typesetting_units,
+            precomputed_scale,
+            use_english_line_break,
+            apply_layout=True,
+        )
 
     def typsetting_document(self, document: il_version_1.Document):
+        # 预处理：获取所有段落的最优缩放因子
+        self.preprocess_document(document)
+
+        # 重置段落计数器
+        self._current_paragraph_index = 0
+
+        # 原有的排版逻辑
         with self.translation_config.progress_monitor.stage_start(
             self.stage_name,
             len(document.page),
@@ -817,11 +1064,23 @@ class Typesetting:
             paragraph.pdf_paragraph_composition = self.create_passthrough_composition(
                 typesetting_units,
             )
-            return
+        else:
+            # 使用预计算的缩放因子进行重排版
+            if self._current_paragraph_index < len(self.document_scales):
+                precomputed_scale = self.document_scales[self._current_paragraph_index]
+            else:
+                # 如果索引超出范围，使用默认值
+                logger.warning("段落索引超出范围，使用默认缩放因子 1.0")
+                precomputed_scale = 1.0
 
-        # 如果有单元无法直接传递，则进行重排版
-        paragraph.pdf_paragraph_composition = []
-        self.retypeset(paragraph, page, typesetting_units)
+            # 如果有单元无法直接传递，则进行重排版
+            paragraph.pdf_paragraph_composition = []
+            self.retypeset_with_precomputed_scale(
+                paragraph, page, typesetting_units, precomputed_scale
+            )
+
+        # 递增段落计数器
+        self._current_paragraph_index += 1
 
     def _get_width_before_next_break_point(
         self, typesetting_units: list[TypesettingUnit], scale: float
@@ -843,7 +1102,7 @@ class Typesetting:
         typesetting_units: list[TypesettingUnit],
         box: Box,
         scale: float,
-        line_spacing: float,
+        line_skip: float,
         paragraph: il_version_1.PdfParagraph,
         use_english_line_break: bool = True,
     ) -> tuple[list[TypesettingUnit], bool]:
@@ -853,7 +1112,6 @@ class Typesetting:
             typesetting_units: 要布局的排版单元列表
             box: 布局边界框
             scale: 缩放因子
-            line_spacing: 行间距
 
         Returns:
             tuple[list[TypesettingUnit], bool]: (已布局的排版单元列表，是否所有单元都放得下)
@@ -891,7 +1149,7 @@ class Typesetting:
         current_x = box.x
         current_y = box.y2 - avg_height
         box = copy.deepcopy(box)
-        # box.y -= avg_height * (line_spacing - 1.01)
+        # box.y -= avg_height * (line_spacing - 1.01) # line_spacing 已被替换为line_skip
         line_height = 0
         current_line_heights = []  # 存储当前行所有元素的高度
 
@@ -964,7 +1222,7 @@ class Typesetting:
                 max_height = max(current_line_heights)
                 mode_height = statistics.mode(current_line_heights)
 
-                current_y -= max(mode_height * line_spacing, max_height * 1.05)
+                current_y -= max(line_height * line_skip, max_height * 1.05)
                 line_ys.append(current_y)
                 line_height = 0.0
                 current_line_heights = []  # 清空当前行高度列表
@@ -973,7 +1231,7 @@ class Typesetting:
                 # if current_y - unit_height < box.y:
                 if current_y < box.y:
                     all_units_fit = False
-                    break
+                    # 这里不要 break，继续排版剩余内容
 
                 if unit.is_space:
                     line_height = max(line_height, unit_height)
@@ -995,96 +1253,6 @@ class Typesetting:
             last_unit = relocated_unit
 
         return typeset_units, all_units_fit
-
-    def retypeset(
-        self,
-        paragraph: il_version_1.PdfParagraph,
-        page: il_version_1.Page,
-        typesetting_units: list[TypesettingUnit],
-        use_english_line_break: bool = True,
-    ):
-        box = paragraph.box
-        scale = 1.0
-        line_spacing = 1.7  # 初始行距为 1.7
-        min_scale = 0.1  # 最小缩放因子
-        min_line_spacing = 1.4  # 最小行距
-        expand_space_flag = 0  # 0: 未扩展，1: 已向下扩展，2: 已向右扩展
-
-        while scale >= min_scale:
-            # 尝试布局排版单元
-            typeset_units, all_units_fit = self._layout_typesetting_units(
-                typesetting_units,
-                box,
-                scale,
-                line_spacing,
-                paragraph,
-                use_english_line_break,
-            )
-
-            # 如果所有单元都放得下，就完成排版
-            if all_units_fit:
-                # 将排版后的单元转换为段落组合
-                paragraph.scale = scale
-                paragraph.pdf_paragraph_composition = []
-                for unit in typeset_units:
-                    for char in unit.render():
-                        paragraph.pdf_paragraph_composition.append(
-                            PdfParagraphComposition(pdf_character=char),
-                        )
-                return
-            if not paragraph.debug_id:
-                return
-            # 如果当前行距大于最小行距，先减小行距
-            if line_spacing > min_line_spacing:
-                line_spacing -= 0.1
-            else:
-                # 行距已经最小，减小缩放因子
-                if scale > 0.6:
-                    scale -= 0.05
-                else:
-                    scale -= 0.1
-                line_spacing = 1.7  # 重置行距
-
-            if scale < 0.7 and min_line_spacing > 1.1:
-                if expand_space_flag == 0:
-                    # 先尝试向下扩展
-                    min_y = self.get_max_bottom_space(box, page) + 2
-                    if min_y < box.y:
-                        expanded_box = Box(
-                            x=box.x,
-                            y=min_y,
-                            x2=box.x2,
-                            y2=box.y2,
-                        )
-                        # 更新段落的边界框
-                        paragraph.box = expanded_box
-                        box = expanded_box
-                    expand_space_flag = 1
-                    continue
-                elif expand_space_flag == 1:
-                    # 如果向下扩展后还不够，再尝试向右扩展
-                    max_x = self.get_max_right_space(box, page) - 5
-                    if max_x > box.x2:
-                        expanded_box = Box(
-                            x=box.x,
-                            y=box.y,
-                            x2=max_x,
-                            y2=box.y2,
-                        )
-                        # 更新段落的边界框
-                        paragraph.box = expanded_box
-                        box = expanded_box
-                    expand_space_flag = 2
-                    continue
-
-                min_line_spacing = 1.1
-                scale = 1.0
-                line_spacing = 1.7
-        # 如果仍然放不下，则尝试去除英文换行限制
-        if use_english_line_break:
-            self.retypeset(
-                paragraph, page, typesetting_units, use_english_line_break=False
-            )
 
     def create_typesetting_units(
         self,

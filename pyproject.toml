@@ -50,6 +50,7 @@ dependencies = [
     "rtree>=1.4.0",
     "chardet>=5.2.0",
     "scipy>=1.15.3",
+    "uharfbuzz>=0.50.2",
 ]
 
 [project.optional-dependencies]

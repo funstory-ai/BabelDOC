@@ -261,7 +261,14 @@ def get_char_unicode_string(chars: list[PdfCharacter | str]) -> str:
             unicode_chars.append(chars[i])
             continue
 
-        unicode_chars.append(chars[i].char_unicode)
+        # use unicode regex to replace all space with " "
+        unicode_chars.append(
+            regex.sub(
+                r"\s+",
+                " ",
+                unicodedata.normalize("NFKC", chars[i].char_unicode),
+            )
+        )
 
         # 如果是空格，跳过
         if chars[i].char_unicode == " ":
