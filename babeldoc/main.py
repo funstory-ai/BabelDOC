@@ -22,7 +22,7 @@ from babeldoc.translator.translator import OpenAITranslator
 from babeldoc.translator.translator import set_translate_rate_limiter
 
 logger = logging.getLogger(__name__)
-__version__ = "0.5.10"
+__version__ = "0.5.11"
 
 
 def create_parser():
@@ -385,6 +385,21 @@ def create_parser():
         help="The API key for the OpenAI API.",
     )
     service_group.add_argument(
+        "--openai-term-extraction-model",
+        default=None,
+        help="OpenAI model to use for automatic term extraction. Defaults to --openai-model when unset.",
+    )
+    service_group.add_argument(
+        "--openai-term-extraction-base-url",
+        default=None,
+        help="Base URL for the OpenAI API used during automatic term extraction. Falls back to --openai-base-url when unset.",
+    )
+    service_group.add_argument(
+        "--openai-term-extraction-api-key",
+        default=None,
+        help="API key for the OpenAI API used during automatic term extraction. Falls back to --openai-api-key when unset.",
+    )
+    service_group.add_argument(
         "--enable-json-mode-if-requested",
         action="store_true",
         default=False,
@@ -453,6 +468,23 @@ async def main():
             send_dashscope_header=args.send_dashscope_header,
             send_temperature=not args.no_send_temperature,
         )
+        term_extraction_translator = translator
+        if (
+            args.openai_term_extraction_model
+            or args.openai_term_extraction_base_url
+            or args.openai_term_extraction_api_key
+        ):
+            term_extraction_translator = OpenAITranslator(
+                lang_in=args.lang_in,
+                lang_out=args.lang_out,
+                model=args.openai_term_extraction_model or args.openai_model,
+                base_url=(args.openai_term_extraction_base_url or args.openai_base_url),
+                api_key=args.openai_term_extraction_api_key or args.openai_api_key,
+                ignore_cache=args.ignore_cache,
+                enable_json_mode_if_requested=args.enable_json_mode_if_requested,
+                send_dashscope_header=args.send_dashscope_header,
+                send_temperature=not args.no_send_temperature,
+            )
     else:
         raise ValueError("Invalid translator type")
 
@@ -584,6 +616,10 @@ async def main():
             args.max_pages_per_part
         )
 
+    total_term_extraction_total_tokens = 0
+    total_term_extraction_prompt_tokens = 0
+    total_term_extraction_completion_tokens = 0
+
     for file in pending_files:
         # 清理文件路径，去除两端的引号
         file = file.strip("\"'")
@@ -594,6 +630,7 @@ async def main():
             pages=args.pages,
             output_dir=args.output,
             translator=translator,
+            term_extraction_translator=term_extraction_translator,
             debug=args.debug,
             lang_in=args.lang_in,
             lang_out=args.lang_out,
@@ -660,9 +697,26 @@ async def main():
                     result = event["translate_result"]
                     logger.info(str(result))
                     break
+        usage = config.term_extraction_token_usage
+        total_term_extraction_total_tokens += usage["total_tokens"]
+        total_term_extraction_prompt_tokens += usage["prompt_tokens"]
+        total_term_extraction_completion_tokens += usage["completion_tokens"]
     logger.info(f"Total tokens: {translator.token_count.value}")
     logger.info(f"Prompt tokens: {translator.prompt_token_count.value}")
     logger.info(f"Completion tokens: {translator.completion_token_count.value}")
+    logger.info(
+        "Term extraction tokens: total=%s prompt=%s completion=%s",
+        total_term_extraction_total_tokens,
+        total_term_extraction_prompt_tokens,
+        total_term_extraction_completion_tokens,
+    )
+    if term_extraction_translator is not translator:
+        logger.info(
+            "Term extraction translator raw tokens: total=%s prompt=%s completion=%s",
+            term_extraction_translator.token_count.value,
+            term_extraction_translator.prompt_token_count.value,
+            term_extraction_translator.completion_token_count.value,
+        )
 
 
 def create_progress_handler(translation_config: TranslationConfig):

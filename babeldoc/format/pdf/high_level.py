@@ -127,6 +127,19 @@ def verify_file_hash(file_path: str, expected_hash: str) -> bool:
     return sha256_hash.hexdigest() == expected_hash
 
 
+def translator_supports_llm(translator) -> bool:
+    if not translator or not hasattr(translator, "do_llm_translate"):
+        return False
+    try:
+        translator.do_llm_translate(None)
+        return True
+    except NotImplementedError:
+        return False
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.debug("translator %s failed llm detection: %s", translator, exc)
+        return False
+
+
 def start_parse_il(
     inf: BinaryIO,
     pages: list[int] | None = None,
@@ -476,15 +489,36 @@ def fix_filter(doc):
         if f[0] == "xref":
             data = doc.xref_stream(page_piece)
             doc.update_stream(page_piece, data)
-
     for page in doc:
         contents = page.get_contents()
-        if len(contents) > 1:
+        t, v = doc.xref_get_key(page.xref, "Rotate")
+        rotate = -int(v) if t == "int" else 0
+        if len(contents) > 1 or rotate:
             page_streams = [doc.xref_stream(i) for i in contents]
             r = doc.get_new_xref()
+            page_prefix = b""
+            page_suffix = b""
+            if rotate:
+                m0 = pymupdf.Matrix(rotate)
+                b0 = page.mediabox * m0
+                m1 = m0 * pymupdf.Matrix(1, 0, 0, 1, b0.x0, -b0.y0)
+                page_prefix = (
+                    f" {m1.a} {m1.b} {m1.c} {m1.d} {m1.e} {m1.f} cm q ".encode()
+                )
+                page_suffix = b" Q "
+                update_page_bbox(doc, page, page.cropbox * m1, "CropBox")
+                update_page_bbox(doc, page, page.mediabox * m1, "MediaBox")
+                update_page_bbox(doc, page, page.artbox * m1, "ArtBox")
+                update_page_bbox(doc, page, page.bleedbox * m1, "BleedBox")
+                doc.xref_set_key(page.xref, "Rotate", "0")
             doc.update_object(r, "<<>>")
-            doc.update_stream(r, b" ".join(page_streams))
+            doc.update_stream(r, page_prefix + b" ".join(page_streams) + page_suffix)
             doc.xref_set_key(page.xref, "Contents", f"{r} 0 R")
+
+
+def update_page_bbox(doc, page, box, key):
+    if doc.xref_get_key(page.xref, key)[0] == "array":
+        doc.xref_set_key(page.xref, key, f"[{box.x0} {box.y0} {box.x1} {box.y1}]")
 
 
 def do_translate(
@@ -924,17 +958,15 @@ def _do_translate_single(
         )
 
     translate_engine = translation_config.translator
+    term_extraction_engine = translation_config.get_term_extraction_translator()
 
-    support_llm_translate = False
-    try:
-        if translate_engine and hasattr(translate_engine, "do_llm_translate"):
-            translate_engine.do_llm_translate(None)
-            support_llm_translate = True
-    except NotImplementedError:
-        support_llm_translate = False
+    support_llm_translate = translator_supports_llm(translate_engine)
+    support_llm_term_extraction = translator_supports_llm(term_extraction_engine)
 
-    if support_llm_translate and translation_config.auto_extract_glossary:
-        AutomaticTermExtractor(translate_engine, translation_config).procress(docs)
+    if support_llm_term_extraction and translation_config.auto_extract_glossary:
+        AutomaticTermExtractor(term_extraction_engine, translation_config).procress(
+            docs
+        )
 
     if not translation_config.skip_translation:
         if support_llm_translate:

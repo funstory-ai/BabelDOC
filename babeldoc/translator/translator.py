@@ -212,6 +212,12 @@ class OpenAITranslator(BaseTranslator):
     ):
         super().__init__(lang_in, lang_out, ignore_cache)
         self.options = {"temperature": 0}  # 随机采样可能会打断公式标记
+        self.extra_body = {}
+        # if 'gpt-5' in model and 'gpt-5-chat' not in model:
+        #     self.extra_body['reasoning'] = {
+        #         "effort": "minimal"
+        #     }
+        #     self.add_cache_impact_parameters("reasoning-effort", 'minimal')
         self.client = openai.OpenAI(
             base_url=base_url,
             api_key=api_key,
@@ -253,6 +259,7 @@ class OpenAITranslator(BaseTranslator):
             model=self.model,
             **options,
             messages=self.prompt(text),
+            extra_body=self.extra_body,
         )
         self.update_token_count(response)
         return response.choices[0].message.content.strip()
@@ -304,6 +311,7 @@ class OpenAITranslator(BaseTranslator):
                 },
             ],
             extra_headers=extra_headers,
+            extra_body=self.extra_body,
         )
         self.update_token_count(response)
         return response.choices[0].message.content.strip()

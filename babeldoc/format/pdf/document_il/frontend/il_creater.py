@@ -12,6 +12,7 @@ import pymupdf
 
 import babeldoc.pdfminer.pdfinterp
 from babeldoc.format.pdf.babelpdf.base14 import get_base14_bbox
+from babeldoc.format.pdf.babelpdf.cidfont import get_cidfont_bbox
 from babeldoc.format.pdf.babelpdf.encoding import WinAnsiEncoding
 from babeldoc.format.pdf.babelpdf.encoding import get_type1_encoding
 from babeldoc.format.pdf.babelpdf.utils import guarded_bbox
@@ -762,6 +763,8 @@ class ILCreater:
             obj_type, obj_val = self.mupdf.xref_get_key(xobj_id, "BaseFont")
             if obj_type == "name":
                 bbox_list = get_base14_bbox(obj_val[1:])
+        if cid_bbox := get_cidfont_bbox(self.mupdf, xobj_id):
+            bbox_list = cid_bbox
         return bbox_list, cmap
 
     def create_graphic_state(

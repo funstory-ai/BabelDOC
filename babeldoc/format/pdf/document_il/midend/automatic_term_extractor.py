@@ -138,6 +138,19 @@ class AutomaticTermExtractor:
         except Exception:
             return 0
 
+    def _snapshot_token_usage(self) -> tuple[int, int, int]:
+        if not self.translate_engine:
+            return 0, 0, 0
+        token_counter = getattr(self.translate_engine, "token_count", None)
+        prompt_counter = getattr(self.translate_engine, "prompt_token_count", None)
+        completion_counter = getattr(
+            self.translate_engine, "completion_token_count", None
+        )
+        total_tokens = token_counter.value if token_counter else 0
+        prompt_tokens = prompt_counter.value if prompt_counter else 0
+        completion_tokens = completion_counter.value if completion_counter else 0
+        return total_tokens, prompt_tokens, completion_tokens
+
     def _clean_json_output(self, llm_output: str) -> str:
         llm_output = llm_output.strip()
         if llm_output.startswith("<json>"):
@@ -314,6 +327,7 @@ class AutomaticTermExtractor:
 
     def procress(self, doc_il: ILDocument):
         logger.info(f"{self.stage_name}: Starting term extraction for document.")
+        start_total, start_prompt, start_completion = self._snapshot_token_usage()
         tracker = DocumentTermExtractTracker()
         total = sum(len(page.pdf_paragraph) for page in doc_il.page)
         with self.translation_config.progress_monitor.stage_start(
@@ -327,6 +341,12 @@ class AutomaticTermExtractor:
                     self.process_page(page, executor, pbar, tracker.new_page())
 
         self.shared_context.finalize_auto_extracted_glossary()
+        end_total, end_prompt, end_completion = self._snapshot_token_usage()
+        self.translation_config.record_term_extraction_usage(
+            end_total - start_total,
+            end_prompt - start_prompt,
+            end_completion - start_completion,
+        )
 
         if self.translation_config.debug:
             path = self.translation_config.get_working_file_path(

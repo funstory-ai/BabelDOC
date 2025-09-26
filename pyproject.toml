@@ -1,6 +1,6 @@
 [project]
 name = "BabelDOC"
-version = "0.5.10"
+version = "0.5.11"
 description = "Yet Another Document Translator"
 license = "AGPL-3.0"
 readme = "README.md"
@@ -162,7 +162,7 @@ pythonpath = [".", "src"]
 testpaths = ["tests"]
 
 [bumpver]
-current_version = "0.5.10"
+current_version = "0.5.11"
 version_pattern = "MAJOR.MINOR.PATCH[.PYTAGNUM]"
 
 [bumpver.file_patterns]
