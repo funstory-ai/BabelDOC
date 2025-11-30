@@ -51,7 +51,7 @@ wheels = [
 
 [[package]]
 name = "babeldoc"
-version = "0.5.20"
+version = "0.5.21"
 source = { editable = "." }
 dependencies = [
     { name = "bitstring" },
@@ -63,6 +63,7 @@ dependencies = [
     { name = "httpx", extra = ["socks"] },
     { name = "huggingface-hub" },
     { name = "hyperscan" },
+    { name = "levenshtein" },
     { name = "msgpack" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -75,7 +76,6 @@ dependencies = [
     { name = "psutil" },
     { name = "pydantic" },
     { name = "pymupdf" },
-    { name = "python-levenshtein" },
     { name = "pyzstd" },
     { name = "rapidocr-onnxruntime" },
     { name = "rich" },
@@ -131,6 +131,7 @@ requires-dist = [
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=0.27.0" },
     { name = "hyperscan", specifier = ">=0.7.13" },
+    { name = "levenshtein", specifier = ">=0.27.1" },
     { name = "memray", marker = "extra == 'memray'", specifier = ">=1.17.1" },
     { name = "msgpack", specifier = ">=1.1.0" },
     { name = "numpy", specifier = ">=2.0.2" },
@@ -145,7 +146,6 @@ requires-dist = [
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pydantic", specifier = ">=2.10.6" },
     { name = "pymupdf", specifier = ">=1.25.1" },
-    { name = "python-levenshtein", specifier = ">=0.27.1" },
     { name = "pyzstd", specifier = ">=0.17.0" },
     { name = "rapidocr-onnxruntime", specifier = ">=1.4.4" },
     { name = "rich", specifier = ">=13.9.4" },
@@ -2454,18 +2454,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/66/c0/0c8b6ad9f17a802ee498c46e004a0eb49bc148f2fd230864601a86dcf6db/python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3", size = 342432, upload-time = "2024-03-01T18:36:20.211Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427", size = 229892, upload-time = "2024-03-01T18:36:18.57Z" },
-]
-
-[[package]]
-name = "python-levenshtein"
-version = "0.27.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "levenshtein" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/13/f6/d865a565b7eeef4b5f9a18accafb03d5730c712420fc84a3a40555f7ea6b/python_levenshtein-0.27.1.tar.gz", hash = "sha256:3a5314a011016d373d309a68e875fd029caaa692ad3f32e78319299648045f11", size = 12326, upload-time = "2025-03-02T19:47:25.641Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/2a/95/8c8fd923b0a702388da4f9e0368f490d123cc5224279e6a083984304a15e/python_levenshtein-0.27.1-py3-none-any.whl", hash = "sha256:e1a4bc2a70284b2ebc4c505646142fecd0f831e49aa04ed972995895aec57396", size = 9426, upload-time = "2025-03-02T19:47:24.801Z" },
 ]
 
 [[package]]
