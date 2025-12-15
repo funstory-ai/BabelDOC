@@ -9,7 +9,7 @@ jobs:
     name: runner / ruff
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       
       - name: Install Python
         uses: actions/setup-python@v6
@@ -34,7 +34,7 @@ jobs:
     name: runner / autocorrect
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: AutoCorrect
         uses: huacnlee/autocorrect-action@bf91ab3904c2908dd8e71312a8a83ed1eb632997 # v2.13.3
       - name: Report ReviewDog
