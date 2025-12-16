@@ -1,12 +1,10 @@
-"""Language code normalization utilities."""
-
-from typing import Literal, List
+from typing import Literal
 
 # Normalized language codes supported by i18n prompts
 NormalizedLangCode = Literal["ja", "zh", "en"]
 
 # Mapping of various language identifiers to normalized codes
-_LANG_ALIASES: dict[NormalizedLangCode, List[str]] = {
+_LANG_ALIASES: dict[NormalizedLangCode, list[str]] = {
     "en": ["en", "eng", "english"],
     "zh": ["zh", "zh-cn", "zh-hans", "zhs", "chinese", "中文", "简体中文"],
     "ja": ["ja", "jp", "jpn", "japanese", "日本語"],
