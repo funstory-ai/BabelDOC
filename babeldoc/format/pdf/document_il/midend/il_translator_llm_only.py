@@ -32,9 +32,18 @@ from babeldoc.format.pdf.document_il.utils.paragraph_helper import (
 )
 from babeldoc.format.pdf.translation_config import TranslationConfig
 from babeldoc.translator.translator import BaseTranslator
+from babeldoc.utils.lang_code import normalize_lang_code
 from babeldoc.utils.priority_thread_pool_executor import PriorityThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
+
+# Localized translation example outputs
+_TRANSLATION_EXAMPLE_OUTPUTS: dict[str, str] = {
+    "zh": """{v1}<style id='2'>你好</style>，世界！""",
+    "ja": """{v1}<style id='2'>こんにちは</style>、世界！""",
+}
+
+_DEFAULT_TRANSLATION_EXAMPLE_OUTPUT = _TRANSLATION_EXAMPLE_OUTPUTS["zh"]
 
 
 PROMPT_TEMPLATE = Template(
@@ -81,7 +90,7 @@ Output:
 [
     {
     "id": 0,
-    "output": "{v1}<style id='2'>你好</style>，世界！"
+    "output": "$translation_example_output"
     }
 ]
 
@@ -961,6 +970,10 @@ class ILTranslatorLLMOnly:
                 glossary_table_lines.append("")
             glossary_tables_block = "\n".join(glossary_table_lines)
 
+        lang_code = normalize_lang_code(self.translation_config.lang_out)
+        translation_example_output = _TRANSLATION_EXAMPLE_OUTPUTS.get(
+            lang_code, _DEFAULT_TRANSLATION_EXAMPLE_OUTPUT
+        )
         return PROMPT_TEMPLATE.substitute(
             role_block=role_block,
             glossary_usage_rules_block=glossary_usage_rules_block,
@@ -968,6 +981,7 @@ class ILTranslatorLLMOnly:
             json_input_str=json_input_str,
             glossary_tables_block=glossary_tables_block,
             lang_out=self.translation_config.lang_out,
+            translation_example_output=translation_example_output,
         )
 
     def _clean_json_output(self, llm_output: str) -> str:

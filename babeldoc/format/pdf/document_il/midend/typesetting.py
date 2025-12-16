@@ -25,8 +25,22 @@ from babeldoc.format.pdf.document_il.utils.formular_helper import update_formula
 from babeldoc.format.pdf.document_il.utils.layout_helper import box_to_tuple
 from babeldoc.format.pdf.translation_config import TranslationConfig
 from babeldoc.format.pdf.translation_config import WatermarkOutputMode
+from babeldoc.utils.lang_code import normalize_lang_code
 
 logger = logging.getLogger(__name__)
+
+# Localized watermark messages
+_WATERMARK_MESSAGES: dict[str, str] = {
+    "zh": f"本文档由 funstory.ai 的开源 PDF 翻译库 BabelDOC {WATERMARK_VERSION} (http://yadt.io) 翻译，本仓库正在积极的建设当中，欢迎 star 和关注。",
+    "ja": f"この文書は funstory.ai のオープンソース PDF 翻訳ライブラリ BabelDOC {WATERMARK_VERSION} (http://yadt.io) によって翻訳されました。このリポジトリは現在活発に開発中です。star とフォローをお願いします。",
+    "en": f"This document was translated by BabelDOC {WATERMARK_VERSION} (http://yadt.io), an open-source PDF translation library by funstory.ai. The repository is under active development. Please star and follow.",
+}
+
+_WATERMARK_DEBUG_MESSAGES: dict[str, str] = {
+    "zh": "\n 当前为 DEBUG 模式，将显示更多辅助信息。请注意，部分框的位置对应原文，但在译文中可能不正确。",
+    "ja": "\n 現在 DEBUG モードです。追加の補助情報が表示されます。一部のボックスの位置は原文に対応していますが、翻訳文では正しくない場合があります。",
+    "en": "\n Currently in DEBUG mode. Additional auxiliary information will be displayed. Note that some box positions correspond to the source text but may not be correct in the translation.",
+}
 
 LINE_BREAK_REGEX = regex.compile(
     r"^["
@@ -1203,9 +1217,12 @@ class Typesetting:
             font_size=6,
             graphic_state=il_version_1.GraphicState(),
         )
-        text = f"本文档由 funstory.ai 的开源 PDF 翻译库 BabelDOC {WATERMARK_VERSION} (http://yadt.io) 翻译，本仓库正在积极的建设当中，欢迎 star 和关注。"
+        lang_code = normalize_lang_code(self.translation_config.lang_out)
+        text = _WATERMARK_MESSAGES.get(lang_code, _WATERMARK_MESSAGES["en"])
         if self.translation_config.debug:
-            text += "\n 当前为 DEBUG 模式，将显示更多辅助信息。请注意，部分框的位置对应原文，但在译文中可能不正确。"
+            text += _WATERMARK_DEBUG_MESSAGES.get(
+                lang_code, _WATERMARK_DEBUG_MESSAGES["en"]
+            )
         page.pdf_paragraph.append(
             il_version_1.PdfParagraph(
                 first_line_indent=False,

@@ -42,9 +42,18 @@ from babeldoc.format.pdf.document_il.utils.paragraph_helper import (
 from babeldoc.format.pdf.document_il.utils.style_helper import GRAY80
 from babeldoc.format.pdf.translation_config import TranslationConfig
 from babeldoc.translator.translator import BaseTranslator
+from babeldoc.utils.lang_code import normalize_lang_code
 from babeldoc.utils.priority_thread_pool_executor import PriorityThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
+
+# Localized content filter warning messages
+_CONTENT_FILTER_WARNINGS: dict[str, str] = {
+    "zh": "翻译服务检测到内容可能包含不安全或敏感内容，请您避免翻译敏感内容，感谢您的配合。",
+    "ja": "翻訳サービスが安全でない、または機密性の高いコンテンツを検出しました。機密性の高いコンテンツの翻訳はお控えください。ご協力ありがとうございます。",
+}
+
+_DEFAULT_CONTENT_FILTER_WARNING = _CONTENT_FILTER_WARNINGS["zh"]
 
 
 PROMPT_TEMPLATE = Template(
@@ -1167,9 +1176,13 @@ class ILTranslator:
                 x2=paragraph.box.x2,
                 y2=paragraph.box.y2 + 1.1,
             )
+            lang_code = normalize_lang_code(self.translation_config.lang_out)
+            warning_message = _CONTENT_FILTER_WARNINGS.get(
+                lang_code, _DEFAULT_CONTENT_FILTER_WARNING
+            )
             page.pdf_paragraph.append(
                 self._create_text(
-                    "翻译服务检测到内容可能包含不安全或敏感内容，请您避免翻译敏感内容，感谢您的配合。",
+                    warning_message,
                     GRAY80,
                     new_box,
                     1,

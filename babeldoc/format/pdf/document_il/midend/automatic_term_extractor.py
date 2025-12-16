@@ -20,7 +20,22 @@ from babeldoc.format.pdf.document_il.utils.paragraph_helper import (
 from babeldoc.format.pdf.document_il.utils.paragraph_helper import (
     is_pure_numeric_paragraph,
 )
+from babeldoc.utils.lang_code import normalize_lang_code
 from babeldoc.utils.priority_thread_pool_executor import PriorityThreadPoolExecutor
+
+# Localized example outputs for term extraction
+_TERM_EXAMPLE_OUTPUTS: dict[str, str] = {
+    "zh": """[
+  {"src": "LLM", "tgt": "大语言模型"},
+  {"src": "GPT", "tgt": "GPT"}
+]""",
+    "ja": """[
+  {"src": "LLM", "tgt": "大規模言語モデル"},
+  {"src": "GPT", "tgt": "GPT"}
+]""",
+}
+
+_DEFAULT_TERM_EXAMPLE_OUTPUT = _TERM_EXAMPLE_OUTPUTS["zh"]
 
 if TYPE_CHECKING:
     from babeldoc.format.pdf.translation_config import TranslationConfig
@@ -314,14 +329,15 @@ class AutomaticTermExtractor:
 
                     reference_glossary_section += "\nPlease consider these existing translations for consistency when extracting new terms. IMPORTANT: You should also extract terms that appear in the reference glossaries above if they are found in the input text - don't skip them just because they already exist in the reference."
 
+            lang_code = normalize_lang_code(self.translation_config.lang_out)
+            example_output = _TERM_EXAMPLE_OUTPUTS.get(
+                lang_code, _DEFAULT_TERM_EXAMPLE_OUTPUT
+            )
             prompt = LLM_PROMPT_TEMPLATE.format(
                 target_language=self.translation_config.lang_out,
                 text_to_process="\n\n".join(inputs),
                 reference_glossary_section=reference_glossary_section,
-                example_output="""[
-  {"src": "LLM", "tgt": "大语言模型"},
-  {"src": "GPT", "tgt": "GPT"}
-]""",
+                example_output=example_output,
             )
             tracker.set_input(prompt)
             output = self.translate_engine.llm_translate(
