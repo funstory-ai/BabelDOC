@@ -199,6 +199,7 @@ class TranslationConfig:
         term_extraction_translator: BaseTranslator | None = None,
         metadata_extra_data: str | None = None,
         term_pool_max_workers: int | None = None,
+        disable_same_text_fallback: bool = False,
     ):
         self.translator = translator
         self.term_extraction_translator = term_extraction_translator or translator
@@ -354,6 +355,7 @@ class TranslationConfig:
             "completion_tokens": 0,
             "cache_hit_prompt_tokens": 0,
         }
+        self.disable_same_text_fallback = disable_same_text_fallback
 
         if self.ocr_workaround:
             self.remove_non_formula_lines = False

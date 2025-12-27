@@ -761,7 +761,12 @@ class ILTranslatorLLMOnly:
                     input_token_count = self.calc_token_count(trimed_input)
                     output_token_count = self.calc_token_count(output_unicode)
 
-                    if trimed_input == output_unicode and input_token_count > 10:
+                    same_as_input = trimed_input == output_unicode
+                    if (
+                        same_as_input
+                        and input_token_count > 10
+                        and not self.translation_config.disable_same_text_fallback
+                    ):
                         llm_translate_tracker.set_error_message(
                             "Translation result is the same as input, fallback."
                         )
@@ -772,25 +777,37 @@ class ILTranslatorLLMOnly:
                         continue
 
                     if not (0.3 < output_token_count / input_token_count < 3):
+                        input_preview = re.sub(r"\s+", " ", trimed_input).strip()
+                        output_preview = re.sub(r"\s+", " ", output_unicode).strip()
+                        max_preview_len = 80
+                        if len(input_preview) > max_preview_len:
+                            input_preview = f"{input_preview[:max_preview_len]}..."
+                        if len(output_preview) > max_preview_len:
+                            output_preview = f"{output_preview[:max_preview_len]}..."
                         llm_translate_tracker.set_error_message(
                             f"Translation result is too long or too short. Input: {input_token_count}, Output: {output_token_count}"
                         )
                         logger.warning(
-                            f"Translation result is too long or too short. Input: {input_token_count}, Output: {output_token_count}"
+                            "Translation result is too long or too short. Input: "
+                            f"{input_token_count}, Output: {output_token_count}. "
+                            f"Input preview: {input_preview}, Output preview: {output_preview}"
                         )
                         llm_translate_tracker.set_placeholder_full_match()
                         continue
 
-                    edit_distance = Levenshtein.distance(input_unicode, output_unicode)
-                    if edit_distance < 5 and input_token_count > 20:
-                        llm_translate_tracker.set_error_message(
-                            f"Translation result edit distance is too small. distance: {edit_distance}, input: {input_unicode}, output: {output_unicode}"
+                    if not self.translation_config.disable_same_text_fallback:
+                        edit_distance = Levenshtein.distance(
+                            input_unicode, output_unicode
                         )
-                        logger.warning(
-                            f"Translation result edit distance is too small. distance: {edit_distance}, input: {input_unicode}, output: {output_unicode}"
-                        )
-                        llm_translate_tracker.set_placeholder_full_match()
-                        continue
+                        if edit_distance < 5 and input_token_count > 20:
+                            llm_translate_tracker.set_error_message(
+                                f"Translation result edit distance is too small. distance: {edit_distance}, input: {input_unicode}, output: {output_unicode}"
+                            )
+                            logger.warning(
+                                f"Translation result edit distance is too small. distance: {edit_distance}, input: {input_unicode}, output: {output_unicode}"
+                            )
+                            llm_translate_tracker.set_placeholder_full_match()
+                            continue
                     # Apply the translation to the paragraph
                     self.il_translator.post_translate_paragraph(
                         inputs[id_][2],

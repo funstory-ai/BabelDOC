@@ -195,6 +195,7 @@ uv run babeldoc --files example.pdf --files example2.pdf --openai --openai-model
 - `--openai`: Use OpenAI for translation (default: False)
 - `--custom-system-prompt`: Custom system prompt for translation.
 - `--add-formula-placehold-hint`: Add formula placeholder hint for translation. (Currently not recommended, it may affect translation quality, default: False)
+- `--disable-same-text-fallback`: Disable fallback translation when LLM output matches input text. (default: False)
 - `--pool-max-workers`: Maximum number of worker threads for internal task processing pools. If not specified, defaults to QPS value. This parameter directly sets the worker count, replacing previous QPS-based dynamic calculations.
 - `--no-auto-extract-glossary`: Disable automatic term extraction. If this flag is present, the step is skipped. Defaults to enabled.
 
@@ -305,6 +306,7 @@ openai-model = "gpt-4o-mini"
 openai-base-url = "https://api.openai.com/v1"
 openai-api-key = "your-api-key-here"
 enable-json-mode-if-requested = false  # Enable JSON mode when requested (default: false)
+disable_same_text_fallback = false # Disable fallback translation when LLM output matches input text (default: false)
 pool-max-workers = 8  # Maximum worker threads for task processing (defaults to QPS value if not set)
 
 # Glossary Options (Optional)
