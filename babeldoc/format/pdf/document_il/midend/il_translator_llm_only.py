@@ -777,11 +777,20 @@ class ILTranslatorLLMOnly:
                         continue
 
                     if not (0.3 < output_token_count / input_token_count < 3):
+                        input_preview = re.sub(r"\s+", " ", trimed_input).strip()
+                        output_preview = re.sub(r"\s+", " ", output_unicode).strip()
+                        max_preview_len = 80
+                        if len(input_preview) > max_preview_len:
+                            input_preview = f"{input_preview[:max_preview_len]}..."
+                        if len(output_preview) > max_preview_len:
+                            output_preview = f"{output_preview[:max_preview_len]}..."
                         llm_translate_tracker.set_error_message(
                             f"Translation result is too long or too short. Input: {input_token_count}, Output: {output_token_count}"
                         )
                         logger.warning(
-                            f"Translation result is too long or too short. Input: {input_token_count}, Output: {output_token_count}"
+                            "Translation result is too long or too short. Input: "
+                            f"{input_token_count}, Output: {output_token_count}. "
+                            f"Input preview: {input_preview}, Output preview: {output_preview}"
                         )
                         llm_translate_tracker.set_placeholder_full_match()
                         continue
