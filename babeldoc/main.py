@@ -64,28 +64,9 @@ def create_parser():
         help="RPC service host address for document layout analysis",
     )
     parser.add_argument(
-        "--rpc-doclayout2",
-        help="RPC service host address for document layout analysis",
-    )
-    parser.add_argument(
-        "--rpc-doclayout3",
-        help="RPC service host address for document layout analysis",
-    )
-    parser.add_argument(
-        "--rpc-doclayout4",
-        help="RPC service host address for document layout analysis",
-    )
-    parser.add_argument(
-        "--rpc-doclayout5",
-        help="RPC service host address for document layout analysis",
-    )
-    parser.add_argument(
-        "--rpc-doclayout6",
-        help="RPC service host address for document layout analysis",
-    )
-    parser.add_argument(
-        "--rpc-doclayout7",
-        help="RPC service host address for document layout analysis",
+        "--layout-version",
+        default="v1",
+        help="Document layout analysis version (v1-v7)",
     )
     parser.add_argument(
         "--generate-offline-assets",
@@ -544,31 +525,9 @@ async def main():
     if args.rpc_doclayout:
         from babeldoc.docvision.rpc_doclayout import RpcDocLayoutModel
 
-        doc_layout_model = RpcDocLayoutModel(host=args.rpc_doclayout)
-    elif args.rpc_doclayout2:
-        from babeldoc.docvision.rpc_doclayout2 import RpcDocLayoutModel
-
-        doc_layout_model = RpcDocLayoutModel(host=args.rpc_doclayout2)
-    elif args.rpc_doclayout3:
-        from babeldoc.docvision.rpc_doclayout3 import RpcDocLayoutModel
-
-        doc_layout_model = RpcDocLayoutModel(host=args.rpc_doclayout3)
-    elif args.rpc_doclayout4:
-        from babeldoc.docvision.rpc_doclayout4 import RpcDocLayoutModel
-
-        doc_layout_model = RpcDocLayoutModel(host=args.rpc_doclayout4)
-    elif args.rpc_doclayout5:
-        from babeldoc.docvision.rpc_doclayout5 import RpcDocLayoutModel
-
-        doc_layout_model = RpcDocLayoutModel(host=args.rpc_doclayout5)
-    elif args.rpc_doclayout6:
-        from babeldoc.docvision.rpc_doclayout6 import RpcDocLayoutModel
-
-        doc_layout_model = RpcDocLayoutModel(host=args.rpc_doclayout6)
-    elif args.rpc_doclayout7:
-        from babeldoc.docvision.rpc_doclayout7 import RpcDocLayoutModel
-
-        doc_layout_model = RpcDocLayoutModel(host=args.rpc_doclayout7)
+        doc_layout_model = RpcDocLayoutModel(
+            host=args.rpc_doclayout, version=args.layout_version
+        )
     else:
         from babeldoc.docvision.doclayout import DocLayoutModel
 
