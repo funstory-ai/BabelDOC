@@ -267,14 +267,23 @@ class OpenAITranslator(BaseTranslator):
         if self.send_temperature:
             options.update(self.options)
 
-        response = self.client.chat.completions.create(
+        stream = self.client.chat.completions.create(
             model=self.model,
             **options,
             messages=self.prompt(text),
             extra_body=self.extra_body,
+            stream=True,
         )
-        self.update_token_count(response)
-        return response.choices[0].message.content.strip()
+        
+        collected_content = []
+        for chunk in stream:
+            if chunk.usage:
+                self.update_token_count(chunk)
+            if chunk.choices and chunk.choices[0].delta.content:
+                content = chunk.choices[0].delta.content
+                collected_content.append(content)
+        
+        return "".join(collected_content).strip()
 
     def prompt(self, text):
         return [
@@ -312,7 +321,7 @@ class OpenAITranslator(BaseTranslator):
                 '{"input": "disable", "output": "disable"}'
             )
         try:
-            response = self.client.chat.completions.create(
+            stream = self.client.chat.completions.create(
                 model=self.model,
                 **options,
                 max_tokens=2048,
@@ -324,9 +333,18 @@ class OpenAITranslator(BaseTranslator):
                 ],
                 extra_headers=extra_headers,
                 extra_body=self.extra_body,
+                stream=True,
             )
-            self.update_token_count(response)
-            return response.choices[0].message.content.strip()
+            
+            collected_content = []
+            for chunk in stream:
+                if chunk.usage:
+                    self.update_token_count(chunk)
+                if chunk.choices and chunk.choices[0].delta.content:
+                    collected_content.append(chunk.choices[0].delta.content)
+            
+            return "".join(collected_content).strip()
+            
         except openai.BadRequestError as e:
             if (
                 "系统检测到输入或生成内容可能包含不安全或敏感内容，请您避免输入易产生敏感内容的提示语，感谢您的配合。"
