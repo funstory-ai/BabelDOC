@@ -224,6 +224,9 @@ class DocumentTranslateTracker:
                 "multi_paragraph_index": getattr(para, "multi_paragraph_index", None),
                 "original_placeholders": original_placeholders,
                 "removed_hallucinated_placeholders": removed_hallucinated_placeholders,
+                "layout_label": getattr(para, "layout_label", None),
+                "page_no": getattr(para, "page_no", None),
+                "para_index_in_page": getattr(para, "para_index_in_page", None),
             }
             paragraphs.append(
                 paragraph_json,
@@ -246,6 +249,9 @@ class ParagraphTranslateTracker:
         self.llm_translate_trackers = []
         self.original_placeholders: dict[str, int] = {}
         self.removed_hallucinated_placeholders: dict[str, int] = {}
+        self.layout_label: str | None = None
+        self.page_no: int | None = None
+        self.para_index_in_page: int | None = None
 
     def set_pdf_unicode(self, unicode: str):
         self.pdf_unicode = unicode
@@ -270,6 +276,17 @@ class ParagraphTranslateTracker:
 
     def set_output(self, output: str):
         self.output = output
+
+    def record_layout_info(
+        self,
+        layout_label: str | None,
+        page_no: int | None,
+        para_index_in_page: int | None,
+    ):
+        """Record layout label, page number (1-based), and paragraph index within page (1-based)."""
+        self.layout_label = layout_label
+        self.page_no = page_no
+        self.para_index_in_page = para_index_in_page
 
     def record_removed_hallucinated_placeholder(self, token: str):
         """Record placeholder-like tokens removed from translated text."""
@@ -447,7 +464,8 @@ class ILTranslator:
         tracker: PageTranslateTracker = None,
     ):
         self.translation_config.raise_if_cancelled()
-        for paragraph in page.pdf_paragraph:
+        page_no = (page.page_number + 1) if page.page_number is not None else None
+        for para_index, paragraph in enumerate(page.pdf_paragraph, start=1):
             page_font_map = {}
             for font in page.pdf_font:
                 page_font_map[font.font_id] = font
@@ -462,12 +480,18 @@ class ILTranslator:
                 self.shared_context_cross_split_part.recent_title_paragraph = (
                     copy.deepcopy(paragraph)
                 )
+            para_tracker = tracker.new_paragraph()
+            para_tracker.record_layout_info(
+                layout_label=paragraph.layout_label,
+                page_no=page_no,
+                para_index_in_page=para_index,
+            )
             executor.submit(
                 self.translate_paragraph,
                 paragraph,
                 page,
                 pbar,
-                tracker.new_paragraph(),
+                para_tracker,
                 page_font_map,
                 page_xobj_font_map,
                 priority=1048576 - paragraph_token_count,

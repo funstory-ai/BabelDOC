@@ -641,6 +641,26 @@ class ILTranslatorLLMOnly:
             for i in range(len(batch_paragraph.paragraphs)):
                 paragraph = batch_paragraph.paragraphs[i]
                 tracker = batch_paragraph.trackers[i]
+                page = batch_paragraph.pages[i]
+
+                # Calculate page_no (1-based) and para_index_in_page (1-based)
+                page_no = (
+                    (page.page_number + 1) if page.page_number is not None else None
+                )
+                para_index_in_page = None
+                if page and hasattr(page, "pdf_paragraph"):
+                    for idx, para in enumerate(page.pdf_paragraph, start=1):
+                        if para is paragraph:
+                            para_index_in_page = idx
+                            break
+
+                # Record layout info before pre_translate_paragraph
+                tracker.record_layout_info(
+                    layout_label=paragraph.layout_label,
+                    page_no=page_no,
+                    para_index_in_page=para_index_in_page,
+                )
+
                 text, translate_input = self.il_translator.pre_translate_paragraph(
                     paragraph, tracker, page_font_map, xobj_font_map
                 )
