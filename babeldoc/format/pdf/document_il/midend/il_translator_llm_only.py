@@ -411,6 +411,9 @@ class ILTranslatorLLMOnly:
             ):
                 continue
 
+            if last_curr_paragraph.vertical or first_next_paragraph.vertical:
+                continue
+
             # Build font maps for both pages
             curr_font_map, curr_xobj_font_map = self._build_font_maps(page_curr)
             next_font_map, next_xobj_font_map = self._build_font_maps(page_next)
@@ -489,6 +492,9 @@ class ILTranslatorLLMOnly:
 
             # Skip already translated
             if id(p1) in translated_ids or id(p2) in translated_ids:
+                continue
+
+            if p1.vertical or p2.vertical:
                 continue
 
             # Safety checks for box information
@@ -576,6 +582,11 @@ class ILTranslatorLLMOnly:
                     pbar.advance(1)
                 continue
 
+            if paragraph.vertical:
+                if pbar:
+                    pbar.advance(1)
+                continue
+
             # self.translate_paragraph(paragraph, pbar,tracker.new_paragraph(), page_font_map, page_xobj_font_map)
             total_token_count += self.calc_token_count(paragraph.unicode)
             paragraphs.append(paragraph)
@@ -654,11 +665,22 @@ class ILTranslatorLLMOnly:
                             para_index_in_page = idx
                             break
 
+                # Extract bbox from paragraph.box
+                bbox = None
+                if paragraph.box is not None:
+                    bbox = {
+                        "x": paragraph.box.x,
+                        "y": paragraph.box.y,
+                        "x2": paragraph.box.x2,
+                        "y2": paragraph.box.y2,
+                    }
+
                 # Record layout info before pre_translate_paragraph
                 tracker.record_layout_info(
                     layout_label=paragraph.layout_label,
                     page_no=page_no,
                     para_index_in_page=para_index_in_page,
+                    bbox=bbox,
                 )
 
                 text, translate_input = self.il_translator.pre_translate_paragraph(

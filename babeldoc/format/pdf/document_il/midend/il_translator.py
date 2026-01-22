@@ -227,6 +227,8 @@ class DocumentTranslateTracker:
                 "layout_label": getattr(para, "layout_label", None),
                 "page_no": getattr(para, "page_no", None),
                 "para_index_in_page": getattr(para, "para_index_in_page", None),
+                "bbox": getattr(para, "bbox", None),
+                "token_count": getattr(para, "token_count", None),
             }
             paragraphs.append(
                 paragraph_json,
@@ -252,6 +254,8 @@ class ParagraphTranslateTracker:
         self.layout_label: str | None = None
         self.page_no: int | None = None
         self.para_index_in_page: int | None = None
+        self.bbox: dict[str, float | None] | None = None
+        self.token_count: int | None = None
 
     def set_pdf_unicode(self, unicode: str):
         self.pdf_unicode = unicode
@@ -277,16 +281,22 @@ class ParagraphTranslateTracker:
     def set_output(self, output: str):
         self.output = output
 
+    def set_token_count(self, token_count: int):
+        """Record token count of the input text."""
+        self.token_count = token_count
+
     def record_layout_info(
         self,
         layout_label: str | None,
         page_no: int | None,
         para_index_in_page: int | None,
+        bbox: dict[str, float | None] | None = None,
     ):
-        """Record layout label, page number (1-based), and paragraph index within page (1-based)."""
+        """Record layout label, page number (1-based), paragraph index within page (1-based), and bbox."""
         self.layout_label = layout_label
         self.page_no = page_no
         self.para_index_in_page = para_index_in_page
+        self.bbox = bbox
 
     def record_removed_hallucinated_placeholder(self, token: str):
         """Record placeholder-like tokens removed from translated text."""
@@ -481,10 +491,20 @@ class ILTranslator:
                     copy.deepcopy(paragraph)
                 )
             para_tracker = tracker.new_paragraph()
+            # Extract bbox from paragraph.box
+            bbox = None
+            if paragraph.box is not None:
+                bbox = {
+                    "x": paragraph.box.x,
+                    "y": paragraph.box.y,
+                    "x2": paragraph.box.x2,
+                    "y2": paragraph.box.y2,
+                }
             para_tracker.record_layout_info(
                 layout_label=paragraph.layout_label,
                 page_no=page_no,
                 para_index_in_page=para_index,
+                bbox=bbox,
             )
             executor.submit(
                 self.translate_paragraph,
@@ -982,6 +1002,9 @@ class ILTranslator:
         if paragraph.vertical:
             return None, None
         tracker.set_pdf_unicode(paragraph.unicode)
+        # Calculate and record token count
+        token_count = self.calc_token_count(paragraph.unicode)
+        tracker.set_token_count(token_count)
         if paragraph.xobj_id in xobj_font_map:
             page_font_map = xobj_font_map[paragraph.xobj_id]
         disable_rich_text_translate = (
