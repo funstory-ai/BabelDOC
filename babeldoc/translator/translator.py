@@ -173,20 +173,6 @@ class BaseTranslator(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
-    def do_translate(self, text, rate_limit_params: dict = None):
-        """
-        Actual translate text, override this method
-        :param text: text to translate
-        :return: translated text
-        """
-        logger.critical(
-            f"Do not call BaseTranslator.do_translate. "
-            f"Translator: {self}. "
-            f"Text: {text}. ",
-        )
-        raise NotImplementedError
-
     def __str__(self):
         return f"{self.name} {self.lang_in} {self.lang_out} {self.model}"
 

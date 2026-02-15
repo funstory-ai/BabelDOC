@@ -14,6 +14,8 @@ from typing import Any
 from typing import BinaryIO
 
 import pymupdf
+
+_RE_SURROGATES = re.compile(r"[\uD800-\uDFFF]")
 from pymupdf import Document
 from pymupdf import Font
 
@@ -155,7 +157,7 @@ def add_metadata(
         for k, v in meta.items():
             if v:
                 # 使用正则替换掉 surrogate 范围内的字符
-                meta[k] = re.sub(r"[\uD800-\uDFFF]", "", v)
+                meta[k] = _RE_SURROGATES.sub("", v)
 
         pdf.set_metadata(meta)
         safe_save(pdf, temp_path)

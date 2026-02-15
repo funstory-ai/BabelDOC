@@ -13,6 +13,10 @@ CACHE_FOLDER = Path.home() / ".cache" / "babeldoc"
 
 def get_cache_file_path(filename: str, sub_folder: str | None = None) -> Path:
     if sub_folder is not None:
+        # Prevent path traversal attacks - only allow safe folder names
+        import re
+        if not re.match(r'^[a-zA-Z0-9_-]+$', sub_folder):
+            raise ValueError(f"Invalid sub_folder name: {sub_folder}")
         sub_folder = sub_folder.strip("/")
         sub_folder_path = CACHE_FOLDER / sub_folder
         sub_folder_path.mkdir(parents=True, exist_ok=True)

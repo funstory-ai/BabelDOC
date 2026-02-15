@@ -168,7 +168,8 @@ class LayoutParser:
                 # self.generate_fallback_line_layout_for_page(page)
                 # self._save_debug_box_to_page(page)
                 progress.advance(1)
-            with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
+            max_workers = min(os.cpu_count() or 1, 8)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 for page in docs.page:
                     executor.submit(
                         self.generate_fallback_line_layout_for_page, page, progress
