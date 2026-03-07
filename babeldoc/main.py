@@ -443,6 +443,18 @@ def create_parser():
         help="Do not send temperature parameter to OpenAI API (default: send temperature).",
     )
     service_group.add_argument(
+        "--openai-temperature",
+        type=float,
+        default=0.0,
+        help="OpenAI temperature to use for translation requests (default: 0.0). Ignored when --no-send-temperature is set.",
+    )
+    service_group.add_argument(
+        "--openai-term-extraction-temperature",
+        type=float,
+        default=None,
+        help="OpenAI temperature for term extraction requests. Defaults to --openai-temperature when unset. Ignored when --no-send-temperature is set.",
+    )
+    service_group.add_argument(
         "--openai-reasoning",
         type=str,
         default=None,
@@ -510,6 +522,7 @@ async def main():
             enable_json_mode_if_requested=args.enable_json_mode_if_requested,
             send_dashscope_header=args.send_dashscope_header,
             send_temperature=not args.no_send_temperature,
+            temperature=args.openai_temperature,
             **translator_kwargs,
         )
         term_extraction_translator = translator
@@ -533,6 +546,11 @@ async def main():
                 enable_json_mode_if_requested=args.enable_json_mode_if_requested,
                 send_dashscope_header=args.send_dashscope_header,
                 send_temperature=not args.no_send_temperature,
+                temperature=(
+                    args.openai_term_extraction_temperature
+                    if args.openai_term_extraction_temperature is not None
+                    else args.openai_temperature
+                ),
                 **term_translator_kwargs,
             )
     else:

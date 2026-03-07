@@ -215,10 +215,11 @@ class OpenAITranslator(BaseTranslator):
         enable_json_mode_if_requested=False,
         send_dashscope_header=False,
         send_temperature=True,
+        temperature: float = 0.0,
         reasoning=None,
     ):
         super().__init__(lang_in, lang_out, ignore_cache)
-        self.options = {"temperature": 0}  # 随机采样可能会打断公式标记
+        self.options = {"temperature": temperature}  # 随机采样可能会打断公式标记
         self.extra_body = {}
         # if 'gpt-5' in model and 'gpt-5-chat' not in model:
         #     self.extra_body['reasoning'] = {
