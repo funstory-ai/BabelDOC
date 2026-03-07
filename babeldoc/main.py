@@ -470,6 +470,32 @@ def create_parser():
     return parser
 
 
+def validate_openai_temperature_args(
+    parser: configargparse.ArgParser,
+    args: Any,
+) -> None:
+    if args.openai_temperature is not None and not 0.0 <= args.openai_temperature <= 2.0:
+        parser.error("--openai-temperature must be between 0.0 and 2.0 (inclusive).")
+
+    if (
+        args.openai_term_extraction_temperature is not None
+        and not 0.0 <= args.openai_term_extraction_temperature <= 2.0
+    ):
+        parser.error(
+            "--openai-term-extraction-temperature must be between 0.0 and 2.0 (inclusive)."
+        )
+
+
+def should_create_term_extraction_translator(args: Any) -> bool:
+    return bool(
+        args.openai_term_extraction_model
+        or args.openai_term_extraction_base_url
+        or args.openai_term_extraction_api_key
+        or args.openai_term_extraction_temperature is not None
+        or args.openai_term_extraction_reasoning is not None
+    )
+
+
 async def main():
     parser = create_parser()
     args: Any = parser.parse_args()
@@ -504,6 +530,8 @@ async def main():
     if args.openai and not args.openai_api_key:
         parser.error("使用 OpenAI 服务时必须提供 API key")
 
+    validate_openai_temperature_args(parser, args)
+
     if args.enable_process_pool:
         enable_process_pool()
 
@@ -526,11 +554,7 @@ async def main():
             **translator_kwargs,
         )
         term_extraction_translator = translator
-        if (
-            args.openai_term_extraction_model
-            or args.openai_term_extraction_base_url
-            or args.openai_term_extraction_api_key
-        ):
+        if should_create_term_extraction_translator(args):
             term_translator_kwargs: dict[str, Any] = {}
             if args.openai_term_extraction_reasoning is not None:
                 term_translator_kwargs["reasoning"] = (
