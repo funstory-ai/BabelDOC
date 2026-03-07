@@ -52,6 +52,21 @@ def test_temperature_range_boundaries_are_allowed(flag: str, value: str):
 
 
 @pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--openai-temperature", "-0.1"),
+        ("--openai-temperature", "2.1"),
+        ("--openai-term-extraction-temperature", "-0.1"),
+        ("--openai-term-extraction-temperature", "2.1"),
+    ],
+)
+def test_temperature_validation_skipped_when_no_send_temperature(flag: str, value: str):
+    parser, args = _parse("--no-send-temperature", flag, value)
+
+    validate_openai_temperature_args(parser, args)
+
+
+@pytest.mark.parametrize(
     "extra_args",
     [
         ["--openai-term-extraction-temperature", "0.3"],

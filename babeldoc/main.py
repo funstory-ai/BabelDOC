@@ -474,6 +474,9 @@ def validate_openai_temperature_args(
     parser: configargparse.ArgParser,
     args: Any,
 ) -> None:
+    if args.no_send_temperature:
+        return
+
     if args.openai_temperature is not None and not 0.0 <= args.openai_temperature <= 2.0:
         parser.error("--openai-temperature must be between 0.0 and 2.0 (inclusive).")
 
