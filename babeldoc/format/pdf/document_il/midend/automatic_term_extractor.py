@@ -394,14 +394,14 @@ class AutomaticTermExtractor:
                 "term_extractor_tracking.json"
             )
             logger.debug(f"save translate tracking to {path}")
-            with Path(path).open("w", encoding="utf-8") as f:
+            with Path(path).open("w", encoding="utf-8-sig") as f:
                 f.write(tracker.to_json())
 
             path = self.translation_config.get_working_file_path(
                 "term_extractor_freq.json"
             )
             logger.debug(f"save term frequency to {path}")
-            with Path(path).open("w", encoding="utf-8") as f:
+            with Path(path).open("w", encoding="utf-8-sig") as f:
                 json.dump(
                     self.shared_context.raw_extracted_terms,
                     f,
@@ -413,7 +413,7 @@ class AutomaticTermExtractor:
                 "auto_extractor_glossary.csv"
             )
             logger.debug(f"save auto extracted glossary to {path}")
-            with Path(path).open("w", encoding="utf-8") as f:
+            with Path(path).open("w", encoding="utf-8-sig") as f:
                 auto_extracted_glossary = self.shared_context.auto_extracted_glossary
                 if auto_extracted_glossary:
-                    f.write(auto_extracted_glossary.to_csv(index=False, encoding="utf-8-sig"))
+                    f.write(auto_extracted_glossary.to_csv(index=False))
