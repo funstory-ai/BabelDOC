@@ -140,7 +140,7 @@ class ResultMerger:
                     f"save auto extracted glossary to {auto_extracted_glossary_path}"
                 )
                 f.write(
-                    self.config.shared_context_cross_split_part.auto_extracted_glossary.to_csv(index=False)
+                    self.config.shared_context_cross_split_part.auto_extracted_glossary.to_csv()
                 )
 
         # Create merged result
