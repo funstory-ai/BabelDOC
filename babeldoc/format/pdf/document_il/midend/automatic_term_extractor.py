@@ -416,4 +416,4 @@ class AutomaticTermExtractor:
             with Path(path).open("w", encoding="utf-8") as f:
                 auto_extracted_glossary = self.shared_context.auto_extracted_glossary
                 if auto_extracted_glossary:
-                    f.write(auto_extracted_glossary.to_csv())
+                    f.write(auto_extracted_glossary.to_csv(index=False, encoding="utf-8-sig"))
