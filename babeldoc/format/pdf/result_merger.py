@@ -135,12 +135,12 @@ class ResultMerger:
             auto_extracted_glossary_path = self.config.get_output_file_path(
                 f"{basename}{debug_suffix}.{self.config.lang_out}.glossary.csv"
             )
-            with auto_extracted_glossary_path.open("w", encoding="utf-8") as f:
+            with auto_extracted_glossary_path.open("w", encoding="utf-8-sig") as f:
                 logger.info(
                     f"save auto extracted glossary to {auto_extracted_glossary_path}"
                 )
                 f.write(
-                    self.config.shared_context_cross_split_part.auto_extracted_glossary.to_csv(index=False, encoding="utf-8-sig")
+                    self.config.shared_context_cross_split_part.auto_extracted_glossary.to_csv(index=False)
                 )
 
         # Create merged result
