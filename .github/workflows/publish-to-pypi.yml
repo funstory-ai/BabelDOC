@@ -35,7 +35,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Setup uv with Python 3.12
-        uses: astral-sh/setup-uv@85856786d1ce8acfbcc2f13a5f3fbd6b938f9f41 # v7.1.2
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           python-version: "3.12"
           enable-cache: true
