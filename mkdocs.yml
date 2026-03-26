@@ -30,6 +30,7 @@ site_description: >-
 repo_name: funstory-ai/BabelDOC
 repo_url: https://github.com/funstory-ai/BabelDOC
 edit_uri: edit/main/docs/
+docs_dir: docs
 
 # Copyright
 copyright: Copyright &copy; 2025 funstory.ai

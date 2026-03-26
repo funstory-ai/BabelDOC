@@ -26,7 +26,7 @@ from babeldoc.translator.translator import OpenAITranslator
 from babeldoc.translator.translator import set_translate_rate_limiter
 
 logger = logging.getLogger(__name__)
-__version__ = "0.5.23"
+__version__ = "0.5.24"
 
 
 def create_parser():

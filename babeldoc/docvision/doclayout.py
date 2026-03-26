@@ -66,6 +66,8 @@ class OnnxModel(DocLayoutModel):
             )
         else:
             for provider in available_providers:
+                # disable dml|cuda|
+                # directml/cuda may encounter problems under special circumstances
                 if re.match(r"cpu", provider, re.IGNORECASE):
                     logger.info(f"Available Provider: {provider}")
                     providers.append(provider)
