@@ -37,6 +37,8 @@ os_name = platform.system()
 
 
 class OnnxModel(DocLayoutModel):
+    _FIXED_IMGSZ = 1024  # fixed input size for static-shape CoreML
+
     def __init__(self, model_path: str):
         self.model_path = model_path
 
@@ -47,17 +49,49 @@ class OnnxModel(DocLayoutModel):
         providers = []
 
         available_providers = onnxruntime.get_available_providers()
-        for provider in available_providers:
-            # disable dml|cuda|
-            # directml/cuda may encounter problems under special circumstances
-            if re.match(r"cpu", provider, re.IGNORECASE):
-                logger.info(f"Available Provider: {provider}")
-                providers.append(provider)
+        use_coreml = os_name == "Darwin" and any(
+            re.match(r"coreml", p, re.IGNORECASE) for p in available_providers
+        )
+        if use_coreml:
+            # Fix input shapes to [1, 3, 1024, 1024] so CoreML can take over
+            # 96%+ of the graph nodes (658/681) instead of just 3/823.
+            model = self._make_static_model(model, self._FIXED_IMGSZ)
+            providers = [
+                "CoreMLExecutionProvider",
+                "CPUExecutionProvider",
+            ]
+            logger.info(
+                "Using CoreMLExecutionProvider with static input "
+                f"[1, 3, {self._FIXED_IMGSZ}, {self._FIXED_IMGSZ}]"
+            )
+        else:
+            for provider in available_providers:
+                if re.match(r"cpu", provider, re.IGNORECASE):
+                    logger.info(f"Available Provider: {provider}")
+                    providers.append(provider)
         self.model = onnxruntime.InferenceSession(
             model.SerializeToString(),
             providers=providers,
         )
         self.lock = threading.Lock()
+
+    @staticmethod
+    def _make_static_model(model, imgsz):
+        """Rewrite dynamic input dims to fixed [1, 3, imgsz, imgsz] and run
+        shape inference so all intermediate shapes become static."""
+        from onnx import shape_inference
+
+        for inp in model.graph.input:
+            if inp.name == "images":
+                dim = inp.type.tensor_type.shape.dim
+                for i, val in enumerate([1, 3, imgsz, imgsz]):
+                    dim[i].ClearField("dim_param")
+                    dim[i].dim_value = val
+        try:
+            model = shape_inference.infer_shapes(model)
+        except Exception:
+            pass  # best-effort; CoreML still benefits from fixed input
+        return model
 
     @staticmethod
     def from_pretrained():
@@ -97,9 +131,9 @@ class OnnxModel(DocLayoutModel):
             interpolation=cv2.INTER_LINEAR,
         )
 
-        # Calculate padding size and align to stride multiple
-        pad_w = (new_w - resized_w) % self.stride
-        pad_h = (new_h - resized_h) % self.stride
+        # Pad to full target size (enables static-shape CoreML acceleration)
+        pad_w = new_w - resized_w
+        pad_h = new_h - resized_h
         top, bottom = pad_h // 2, pad_h - pad_h // 2
         left, right = pad_w // 2, pad_w - pad_w // 2
 
