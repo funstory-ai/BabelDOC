@@ -435,7 +435,8 @@ class ParagraphFinder:
         prev_width = max(prev_box.x2 - prev_box.x, 1)
         curr_width = max(curr_box.x2 - curr_box.x, 1)
         tolerance = max(prev_width, curr_width) * 2
-        normal_horizontal_flow = curr_box.x >= prev_box.x - tolerance
+        horizontal_jump = curr_box.x - prev_box.x
+        normal_horizontal_flow = abs(horizontal_jump) <= tolerance
 
         if (
             same_line
