@@ -25,7 +25,9 @@ from babeldoc.format.pdf.document_il.utils.layout_helper import Layout
 from babeldoc.format.pdf.document_il.utils.layout_helper import add_space_dummy_chars
 from babeldoc.format.pdf.document_il.utils.layout_helper import build_layout_index
 from babeldoc.format.pdf.document_il.utils.layout_helper import calculate_iou_for_boxes
-from babeldoc.format.pdf.document_il.utils.layout_helper import calculate_y_iou_for_boxes
+from babeldoc.format.pdf.document_il.utils.layout_helper import (
+    calculate_y_iou_for_boxes
+)
 from babeldoc.format.pdf.document_il.utils.layout_helper import get_char_unicode_string
 from babeldoc.format.pdf.document_il.utils.layout_helper import get_character_layout
 from babeldoc.format.pdf.document_il.utils.layout_helper import is_bullet_point
@@ -398,6 +400,18 @@ class ParagraphFinder:
         current_layout: Layout | None,
         new_layout: Layout | None,
     ) -> bool:
+        """Decide whether a layout change should start a new paragraph.
+
+        Args:
+            prev_char: The previous character in the current paragraph.
+            curr_char: The current character being processed.
+            current_layout: The layout currently assigned to the paragraph.
+            new_layout: The layout assigned to the current character.
+
+        Returns:
+            True if the layout change looks like a structural break and should
+            start a new paragraph, otherwise False.
+        """
         if (
             prev_char is None
             or current_layout is None
@@ -522,7 +536,9 @@ class ParagraphFinder:
                 )
                 and char.char_unicode not in HEIGHT_NOT_USFUL_CHAR_IN_CHAR
             ):
-                xobj_changed = prev_char is not None and prev_char.xobj_id != char.xobj_id
+                xobj_changed = (
+                    prev_char is not None and prev_char.xobj_id != char.xobj_id
+                )
                 layout_changed = (
                     current_layout is not None
                     and char_layout.id != current_layout.id
