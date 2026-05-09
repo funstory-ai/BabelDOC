@@ -25,6 +25,9 @@ from babeldoc.format.pdf.document_il.utils.layout_helper import Layout
 from babeldoc.format.pdf.document_il.utils.layout_helper import add_space_dummy_chars
 from babeldoc.format.pdf.document_il.utils.layout_helper import build_layout_index
 from babeldoc.format.pdf.document_il.utils.layout_helper import calculate_iou_for_boxes
+from babeldoc.format.pdf.document_il.utils.layout_helper import (
+    calculate_y_iou_for_boxes
+)
 from babeldoc.format.pdf.document_il.utils.layout_helper import get_char_unicode_string
 from babeldoc.format.pdf.document_il.utils.layout_helper import get_character_layout
 from babeldoc.format.pdf.document_il.utils.layout_helper import is_bullet_point
@@ -390,6 +393,61 @@ class ParagraphFinder:
             and a.xobj_id == c.xobj_id
         )
 
+    @staticmethod
+    def _should_split_on_layout_change(
+        prev_char: PdfCharacter | None,
+        curr_char: PdfCharacter,
+        current_layout: Layout | None,
+        new_layout: Layout | None,
+    ) -> bool:
+        """Decide whether a layout change should start a new paragraph.
+
+        Args:
+            prev_char: The previous character in the current paragraph.
+            curr_char: The current character being processed.
+            current_layout: The layout currently assigned to the paragraph.
+            new_layout: The layout assigned to the current character.
+
+        Returns:
+            True if the layout change looks like a structural break and should
+            start a new paragraph, otherwise False.
+        """
+        if (
+            prev_char is None
+            or current_layout is None
+            or new_layout is None
+            or current_layout.id == new_layout.id
+        ):
+            return True
+
+        if prev_char.xobj_id != curr_char.xobj_id:
+            return True
+
+        prev_box = prev_char.visual_bbox.box
+        curr_box = curr_char.visual_bbox.box
+
+        y_overlap = max(
+            calculate_y_iou_for_boxes(prev_box, curr_box),
+            calculate_y_iou_for_boxes(curr_box, prev_box),
+        )
+        same_line = y_overlap > 0.6
+
+        prev_width = max(prev_box.x2 - prev_box.x, 1)
+        curr_width = max(curr_box.x2 - curr_box.x, 1)
+        tolerance = max(prev_width, curr_width) * 2
+        horizontal_jump = curr_box.x - prev_box.x
+        normal_horizontal_flow = abs(horizontal_jump) <= tolerance
+
+        if (
+            same_line
+            and normal_horizontal_flow
+            and is_text_layout(current_layout)
+            and is_text_layout(new_layout)
+        ):
+            return False
+
+        return True
+
     def merge_alternating_line_number_paragraphs(self, paragraphs: list[PdfParagraph]):
         # a 代表正文
         # l 代表行号
@@ -462,6 +520,12 @@ class ParagraphFinder:
             char_area = (char_box.x2 - char_box.x) * (char_box.y2 - char_box.y)
             is_small_char = char_area < median_char_area * 0.05
 
+            prev_char = None
+            if current_paragraph and current_paragraph.pdf_paragraph_composition:
+                prev_char = current_paragraph.pdf_paragraph_composition[
+                    -1
+                ].pdf_character
+
             is_new_paragraph = False
             if current_paragraph is None:
                 is_new_paragraph = True
@@ -473,22 +537,26 @@ class ParagraphFinder:
                 )
                 and char.char_unicode not in HEIGHT_NOT_USFUL_CHAR_IN_CHAR
             ):
-                if (
-                    (
-                        char_layout.id != current_layout.id
-                        and not SPACE_REGEX.match(char.char_unicode)
-                    )
-                    or (  # not same xobject
-                        current_paragraph.pdf_paragraph_composition
-                        and current_paragraph.pdf_paragraph_composition[
-                            -1
-                        ].pdf_character.xobj_id
-                        != char.xobj_id
-                    )
-                    or (
-                        is_bullet_point(char)
-                        and not current_paragraph.pdf_paragraph_composition
-                    )
+                xobj_changed = (
+                    prev_char is not None and prev_char.xobj_id != char.xobj_id
+                )
+                layout_changed = (
+                    current_layout is not None
+                    and char_layout.id != current_layout.id
+                    and not SPACE_REGEX.match(char.char_unicode)
+                )
+                bullet_starts_paragraph = (
+                    is_bullet_point(char)
+                    and not current_paragraph.pdf_paragraph_composition
+                )
+
+                if xobj_changed or bullet_starts_paragraph:
+                    is_new_paragraph = True
+                elif layout_changed and self._should_split_on_layout_change(
+                    prev_char,
+                    char,
+                    current_layout,
+                    char_layout,
                 ):
                     is_new_paragraph = True
 
