@@ -589,7 +589,7 @@ class ILTranslatorLLMOnly:
                     )
                 )
 
-            if total_token_count > 200 or len(paragraphs) > 5:
+            if total_token_count > self.translation_config.llm_batch_max_tokens or len(paragraphs) > self.translation_config.llm_batch_max_paragraphs:
                 self.mid += 1
                 executor.submit(
                     self.translate_paragraph,
