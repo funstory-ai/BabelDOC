@@ -292,6 +292,18 @@ def create_parser():
         help="Maximum number of worker threads dedicated to automatic term extraction. If not specified, defaults to --pool-max-workers (or QPS value when unset).",
     )
     translation_group.add_argument(
+        "--llm-batch-max-tokens",
+        type=int,
+        default=200,
+        help="Maximum total tokens per LLM batch translation request. Paragraphs are packed until this limit is reached. (default: 200)",
+    )
+    translation_group.add_argument(
+        "--llm-batch-max-paragraphs",
+        type=int,
+        default=5,
+        help="Maximum number of paragraphs per LLM batch translation request. Paragraphs are packed until this limit is reached. (default: 5)",
+    )
+    translation_group.add_argument(
         "--no-auto-extract-glossary",
         action="store_false",
         dest="auto_extract_glossary",
@@ -729,6 +741,8 @@ async def main():
             skip_formula_offset_calculation=args.skip_formula_offset_calculation,
             metadata_extra_data=args.metadata_extra_data,
             term_pool_max_workers=args.term_pool_max_workers,
+            llm_batch_max_tokens=args.llm_batch_max_tokens,
+            llm_batch_max_paragraphs=args.llm_batch_max_paragraphs,
         )
 
         def nop(_x):
