@@ -294,14 +294,14 @@ def create_parser():
     translation_group.add_argument(
         "--llm-batch-max-tokens",
         type=int,
-        default=2000,
-        help="Maximum total tokens per LLM batch translation request. Paragraphs are packed until this limit is reached. (default: 2000)",
+        default=200,
+        help="Maximum total tokens per LLM batch translation request. Paragraphs are packed until this limit is reached. (default: 200)",
     )
     translation_group.add_argument(
         "--llm-batch-max-paragraphs",
         type=int,
-        default=30,
-        help="Maximum number of paragraphs per LLM batch translation request. Paragraphs are packed until this limit is reached. (default: 30)",
+        default=5,
+        help="Maximum number of paragraphs per LLM batch translation request. Paragraphs are packed until this limit is reached. (default: 5)",
     )
     translation_group.add_argument(
         "--no-auto-extract-glossary",
