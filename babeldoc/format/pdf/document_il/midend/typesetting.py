@@ -101,6 +101,7 @@ class TypesettingUnit:
         font_size: float | None = None,
         style: PdfStyle | None = None,
         xobj_id: int | None = None,
+        vertical: bool = False,
         debug_info: bool = False,
     ):
         assert (char is not None) + (formular is not None) + (
@@ -112,6 +113,7 @@ class TypesettingUnit:
         self.x = None
         self.y = None
         self.scale = None
+        self.vertical = bool(vertical)
         self.debug_info = debug_info
 
         # Cache variables
@@ -149,6 +151,9 @@ class TypesettingUnit:
             self.font_size = font_size
             self.style = style
             self.xobj_id = xobj_id
+            self.vertical = bool(vertical)
+        elif char:
+            self.vertical = bool(char.vertical)
 
     def try_resue_cache(self, old_tu: TypesettingUnit):
         if old_tu.is_cjk_char_cache is not None:
@@ -454,6 +459,15 @@ class TypesettingUnit:
             # return formular_box
         elif self.unicode:
             char_width = self.font.char_lengths(self.unicode, self.font_size)[0]
+            if self.vertical:
+                if self.x is None or self.y is None or self.scale is None:
+                    return Box(0, 0, self.font_size, char_width)
+                return Box(
+                    self.x - self.font_size,
+                    self.y,
+                    self.x,
+                    self.y + char_width,
+                )
             if self.x is None or self.y is None or self.scale is None:
                 return Box(0, 0, char_width, self.font_size)
             return Box(self.x, self.y, self.x + char_width, self.y + self.font_size)
@@ -646,6 +660,7 @@ class TypesettingUnit:
                 font_size=self.font_size * scale,
                 style=self.style,
                 xobj_id=self.xobj_id,
+                vertical=self.vertical,
                 debug_info=self.debug_info,
             )
             new_unit.x = x
@@ -813,17 +828,26 @@ class TypesettingUnit:
             #     new_descent = self.font.descent_fontmap
             #     y -= (original_descent - new_descent) * self.font_size / 1000
 
-            # 计算字符宽度
-            char_width = self.width
+            # 计算字符前进量。旋转文本的前进方向在页面 Y 轴上。
+            char_advance = self.height if self.vertical else self.width
 
             new_char = PdfCharacter(
                 pdf_character_id=self.font.has_glyph(ord(self.unicode)),
                 char_unicode=self.unicode,
-                box=Box(
-                    x=x,  # 使用存储的位置
-                    y=y,
-                    x2=x + char_width,
-                    y2=y + self.font_size,
+                box=(
+                    Box(
+                        x=x - self.font_size,
+                        y=y,
+                        x2=x,
+                        y2=y + char_advance,
+                    )
+                    if self.vertical
+                    else Box(
+                        x=x,  # 使用存储的位置
+                        y=y,
+                        x2=x + char_advance,
+                        y2=y + self.font_size,
+                    )
                 ),
                 pdf_style=PdfStyle(
                     font_id=self.font_id,
@@ -831,8 +855,8 @@ class TypesettingUnit:
                     graphic_state=self.style.graphic_state,
                 ),
                 scale=self.scale,
-                vertical=False,
-                advance=char_width,
+                vertical=self.vertical,
+                advance=char_advance,
                 xobj_id=self.xobj_id,
                 debug_info=self.debug_info,
             )
@@ -973,14 +997,25 @@ class Typesetting:
         while scale >= min_scale:
             try:
                 # 尝试布局排版单元
-                typeset_units, all_units_fit = self._layout_typesetting_units(
-                    typesetting_units,
-                    box,
-                    scale,
-                    line_skip,
-                    paragraph,
-                    use_english_line_break,
-                )
+                if paragraph.vertical:
+                    typeset_units, all_units_fit = (
+                        self._layout_vertical_typesetting_units(
+                            typesetting_units,
+                            box,
+                            scale,
+                            line_skip,
+                            paragraph,
+                        )
+                    )
+                else:
+                    typeset_units, all_units_fit = self._layout_typesetting_units(
+                        typesetting_units,
+                        box,
+                        scale,
+                        line_skip,
+                        paragraph,
+                        use_english_line_break,
+                    )
 
                 # 如果所有单元都放得下
                 if all_units_fit:
@@ -1455,6 +1490,60 @@ class Typesetting:
 
         return typeset_units, all_units_fit
 
+    def _layout_vertical_typesetting_units(
+        self,
+        typesetting_units: list[TypesettingUnit],
+        box: Box,
+        scale: float,
+        line_skip: float,
+        paragraph: il_version_1.PdfParagraph,
+    ) -> tuple[list[TypesettingUnit], bool]:
+        """Layout rotated paragraphs along the page Y axis."""
+        if not typesetting_units:
+            return [], True
+
+        unit_widths = [unit.width for unit in typesetting_units if unit.width]
+        if not unit_widths:
+            return [], True
+        line_width = statistics.mode(unit_widths) * scale
+
+        current_x = box.x2
+        current_y = box.y
+        current_line_widths: list[float] = []
+        typeset_units = []
+        all_units_fit = True
+
+        for unit in typesetting_units:
+            unit_advance = unit.height * scale
+            unit_width = unit.width * scale
+
+            if current_y == box.y and unit.is_space:
+                continue
+
+            if current_y + unit_advance > box.y2:
+                if not current_line_widths:
+                    return [], False
+                current_y = box.y
+                current_x -= max(
+                    statistics.mode(current_line_widths) * line_skip,
+                    line_width,
+                )
+                current_line_widths = []
+
+            if current_x - unit_width < box.x:
+                all_units_fit = False
+
+            if unit.is_space:
+                current_y += unit_advance
+                continue
+
+            relocated_unit = unit.relocate(current_x, current_y, scale)
+            typeset_units.append(relocated_unit)
+            current_line_widths.append(unit_width)
+            current_y = relocated_unit.box.y2
+
+        return typeset_units, all_units_fit
+
     def create_typesetting_units(
         self,
         paragraph: il_version_1.PdfParagraph,
@@ -1527,6 +1616,7 @@ class Typesetting:
                                 font_size=style.font_size,
                                 style=style,
                                 xobj_id=paragraph.xobj_id,
+                                vertical=bool(paragraph.vertical),
                                 debug_info=composition.pdf_same_style_unicode_characters.debug_info
                                 or False,
                             )

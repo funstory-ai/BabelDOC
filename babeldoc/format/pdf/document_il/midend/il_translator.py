@@ -364,6 +364,7 @@ class ILTranslator:
         self.use_as_fallback = False
         self.add_content_filter_hint_lock = threading.Lock()
         self.docs = None
+        self._in_reference_section = False
 
         # Pre-compile patterns for placeholder-like tokens that may be hallucinated by LLM.
         # We only consider the same shapes as our own formula & rich-text placeholders.
@@ -387,6 +388,7 @@ class ILTranslator:
 
     def translate(self, docs: Document):
         self.docs = docs
+        self._in_reference_section = False
         tracker = DocumentTranslateTracker()
 
         if not self.translation_config.shared_context_cross_split_part.first_paragraph:
@@ -412,8 +414,16 @@ class ILTranslator:
             with PriorityThreadPoolExecutor(
                 max_workers=self.translation_config.pool_max_workers,
             ) as executor:
-                for page in docs.page:
-                    self.process_page(page, executor, pbar, tracker.new_page())
+                total_pages = len(docs.page)
+                for page_index, page in enumerate(docs.page):
+                    self.process_page(
+                        page,
+                        executor,
+                        pbar,
+                        tracker.new_page(),
+                        page_index=page_index,
+                        total_pages=total_pages,
+                    )
 
         path = self.translation_config.get_working_file_path("translate_tracking.json")
 
@@ -441,15 +451,76 @@ class ILTranslator:
                     return paragraph
         return None
 
+    def _is_reference_paragraph(self, paragraph: PdfParagraph) -> bool:
+        """Return True for bibliography/reference paragraphs that should stay original."""
+        return paragraph.layout_label in (
+            "reference",
+            "reference_content",
+            "reference_hybrid",
+        )
+
+    def _starts_reference_section(self, paragraph: PdfParagraph) -> bool:
+        """Detect the References/Bibliography section heading."""
+        text = re.sub(r"\s+", " ", paragraph.unicode or "").strip()
+        if not text or len(text) > 40:
+            return False
+
+        text = text.strip(" \t\r\n:：.。;；,，")
+        normalized = re.sub(r"\s+", "", text).lower()
+        return normalized in (
+            "references",
+            "reference",
+            "bibliography",
+            "literaturecited",
+            "workscited",
+            "参考文献",
+            "參考文獻",
+        )
+
+    def _should_skip_for_reference_section(
+        self,
+        paragraph: PdfParagraph,
+        page_index: int | None = None,
+        total_pages: int | None = None,
+    ) -> bool:
+        if self._is_reference_paragraph(paragraph):
+            return True
+
+        if self._in_reference_section:
+            return True
+
+        in_back_half = (
+            page_index is None
+            or total_pages is None
+            or total_pages <= 2
+            or page_index >= total_pages // 2
+        )
+        if in_back_half and self._starts_reference_section(paragraph):
+            self._in_reference_section = True
+            return True
+
+        return False
+
     def process_page(
         self,
         page: Page,
         executor: PriorityThreadPoolExecutor,
         pbar: tqdm | None = None,
         tracker: PageTranslateTracker = None,
+        page_index: int | None = None,
+        total_pages: int | None = None,
     ):
         self.translation_config.raise_if_cancelled()
         for paragraph in page.pdf_paragraph:
+            if self._should_skip_for_reference_section(
+                paragraph,
+                page_index=page_index,
+                total_pages=total_pages,
+            ):
+                if pbar:
+                    pbar.advance(1)
+                continue
+
             page_font_map = {}
             for font in page.pdf_font:
                 page_font_map[font.font_id] = font
@@ -572,6 +643,57 @@ class ILTranslator:
             right_placeholder_regex_pattern,
         )
 
+    def _collect_paragraph_chars(self, paragraph: PdfParagraph):
+        chars = []
+        for composition in paragraph.pdf_paragraph_composition or []:
+            if composition.pdf_line:
+                chars.extend(composition.pdf_line.pdf_character)
+            elif composition.pdf_formula:
+                chars.extend(composition.pdf_formula.pdf_character)
+            elif composition.pdf_character:
+                chars.append(composition.pdf_character)
+            elif composition.pdf_same_style_characters:
+                chars.extend(composition.pdf_same_style_characters.pdf_character)
+        return [char for char in chars if char.char_unicode]
+
+    def _get_vertical_plain_text(self, paragraph: PdfParagraph) -> str:
+        chars = self._collect_paragraph_chars(paragraph)
+        if not chars:
+            return paragraph.unicode or ""
+
+        def char_box(char):
+            if char.visual_bbox and char.visual_bbox.box:
+                return char.visual_bbox.box
+            return char.box
+
+        chars = [char for char in chars if char_box(char)]
+        if not chars:
+            return paragraph.unicode or ""
+
+        font_size = paragraph.pdf_style.font_size if paragraph.pdf_style else 6
+        x_tolerance = max(font_size * 0.7, 2.0)
+        lines: list[list] = []
+        for char in sorted(chars, key=lambda c: char_box(c).x):
+            box = char_box(char)
+            for line in lines:
+                line_x = sum(char_box(c).x for c in line) / len(line)
+                if abs(box.x - line_x) <= x_tolerance:
+                    line.append(char)
+                    break
+            else:
+                lines.append([char])
+
+        line_texts = []
+        for line in sorted(
+            lines,
+            key=lambda group: sum(char_box(c).x for c in group) / len(group),
+        ):
+            ordered = sorted(line, key=lambda c: char_box(c).y)
+            text = "".join(char.char_unicode for char in ordered).strip()
+            if text:
+                line_texts.append(text)
+        return " ".join(line_texts).strip() or (paragraph.unicode or "")
+
     def get_translate_input(
         self,
         paragraph: PdfParagraph,
@@ -588,6 +710,16 @@ class ILTranslator:
         # Skip paragraphs with only placeholders
         if is_placeholder_only_paragraph(paragraph):
             return None
+
+        if paragraph.vertical:
+            text = self._get_vertical_plain_text(paragraph)
+            translate_input = self.TranslateInput(
+                text,
+                [],
+                paragraph.pdf_style,
+            )
+            translate_input.set_original_placeholder_tokens({})
+            return translate_input
 
         # Extract original placeholder-like tokens from the raw paragraph text
         original_placeholder_tokens: dict[str, int] = {}
@@ -959,8 +1091,6 @@ class ILTranslator:
         xobj_font_map: dict[int, dict[str, PdfFont]],
     ):
         """Pre-translation processing: prepare text for translation."""
-        if paragraph.vertical:
-            return None, None
         tracker.set_pdf_unicode(paragraph.unicode)
         if paragraph.xobj_id in xobj_font_map:
             page_font_map = xobj_font_map[paragraph.xobj_id]
@@ -1227,6 +1357,9 @@ class ILTranslator:
         self.translation_config.raise_if_cancelled()
         with PbarContext(pbar):
             try:
+                if self._is_reference_paragraph(paragraph):
+                    return
+
                 if self.use_as_fallback:
                     # il translator llm only modifies unicode in some situations
                     paragraph.unicode = get_paragraph_unicode(paragraph)
