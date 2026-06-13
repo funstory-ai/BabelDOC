@@ -699,7 +699,7 @@ def migrate_toc(
             total_page = set(range(0, len(old_doc)))
 
             pages_to_translate = {
-                i for i in len(old_doc) if translation_config.should_translate_page(i + 1)
++                i for i in range(len(old_doc)) if translation_config.should_translate_page(i + 1)
             }
 
             should_removed_page = list(total_page - pages_to_translate)
