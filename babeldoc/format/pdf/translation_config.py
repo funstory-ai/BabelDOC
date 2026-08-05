@@ -217,6 +217,8 @@ class TranslationConfig:
         metadata_extra_data: str | None = None,
         term_pool_max_workers: int | None = None,
         disable_same_text_fallback: bool = False,
+        llm_batch_max_tokens: int = 200,
+        llm_batch_max_paragraphs: int = 5,
     ):
         self.translator = translator
         self.term_extraction_translator = term_extraction_translator or translator
@@ -376,6 +378,8 @@ class TranslationConfig:
             "cache_hit_prompt_tokens": 0,
         }
         self.disable_same_text_fallback = disable_same_text_fallback
+        self.llm_batch_max_tokens = llm_batch_max_tokens
+        self.llm_batch_max_paragraphs = llm_batch_max_paragraphs
 
         if self.ocr_workaround:
             self.remove_non_formula_lines = False
