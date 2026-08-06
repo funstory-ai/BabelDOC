@@ -11,13 +11,9 @@ from hashlib import md5
 from hashlib import sha256
 from hashlib import sha384
 from hashlib import sha512
+from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
-
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.ciphers import Cipher
-from cryptography.hazmat.primitives.ciphers import algorithms
-from cryptography.hazmat.primitives.ciphers import modes
 
 from babeldoc.pdfminer.arcfour import Arcfour
 from babeldoc.pdfminer.casting import safe_int
@@ -48,6 +44,9 @@ from babeldoc.pdfminer.utils import format_int_alpha
 from babeldoc.pdfminer.utils import format_int_roman
 from babeldoc.pdfminer.utils import nunpack
 from babeldoc.pdfminer import settings
+
+if TYPE_CHECKING:
+    from cryptography.hazmat.primitives.ciphers import Cipher
 
 log = logging.getLogger(__name__)
 
@@ -332,6 +331,26 @@ class PDFXRefStream(PDFBaseXRef):
             raise PDFKeyError(objid)
 
 
+def aes_cbc_cipher(key: bytes, initialization_vector: bytes) -> "Cipher":
+    """Build an AES-CBC cipher, importing cryptography on demand.
+
+    cryptography is only needed to open encrypted PDFs, so it is imported here
+    instead of at module import time. Its Rust extension module fails to load
+    on some broken installations, and an unusable install should not stop
+    BabelDOC from processing the unencrypted documents that do not need it.
+    """
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher
+        from cryptography.hazmat.primitives.ciphers import algorithms
+        from cryptography.hazmat.primitives.ciphers import modes
+    except ImportError as e:
+        raise PDFEncryptionError(
+            "This PDF is encrypted, which requires the 'cryptography' package, "
+            f"but it could not be imported: {e}",
+        ) from e
+    return Cipher(algorithms.AES(key), modes.CBC(initialization_vector))
+
+
 class PDFStandardSecurityHandler:
     PASSWORD_PADDING = (
         b"(\xbfN^Nu\x8aAd\x00NV\xff\xfa\x01\x08..\x00\xb6\xd0h>\x80/\x0c\xa9\xfedSiz"
@@ -534,11 +553,7 @@ class PDFStandardSecurityHandlerV4(PDFStandardSecurityHandler):
         key = hash.digest()[: min(len(key), 16)]
         initialization_vector = data[:16]
         ciphertext = data[16:]
-        cipher = Cipher(
-            algorithms.AES(key),
-            modes.CBC(initialization_vector),
-            backend=default_backend(),
-        )  # type: ignore
+        cipher = aes_cbc_cipher(key, initialization_vector)
         return cipher.decryptor().update(ciphertext)  # type: ignore
 
 
@@ -568,20 +583,12 @@ class PDFStandardSecurityHandlerV5(PDFStandardSecurityHandlerV4):
         hash = self._password_hash(password_b, self.o_validation_salt, self.u)
         if hash == self.o_hash:
             hash = self._password_hash(password_b, self.o_key_salt, self.u)
-            cipher = Cipher(
-                algorithms.AES(hash),
-                modes.CBC(b"\0" * 16),
-                backend=default_backend(),
-            )  # type: ignore
+            cipher = aes_cbc_cipher(hash, b"\0" * 16)
             return cipher.decryptor().update(self.oe)  # type: ignore
         hash = self._password_hash(password_b, self.u_validation_salt)
         if hash == self.u_hash:
             hash = self._password_hash(password_b, self.u_key_salt)
-            cipher = Cipher(
-                algorithms.AES(hash),
-                modes.CBC(b"\0" * 16),
-                backend=default_backend(),
-            )  # type: ignore
+            cipher = aes_cbc_cipher(hash, b"\0" * 16)
             return cipher.decryptor().update(self.ue)  # type: ignore
         return None
 
@@ -650,7 +657,7 @@ class PDFStandardSecurityHandlerV5(PDFStandardSecurityHandlerV4):
         return sum(b % 3 for b in input_bytes) % 3
 
     def _aes_cbc_encrypt(self, key: bytes, iv: bytes, data: bytes) -> bytes:
-        cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+        cipher = aes_cbc_cipher(key, iv)
         encryptor = cipher.encryptor()  # type: ignore
         return encryptor.update(data) + encryptor.finalize()  # type: ignore
 
@@ -658,11 +665,7 @@ class PDFStandardSecurityHandlerV5(PDFStandardSecurityHandlerV4):
         initialization_vector = data[:16]
         ciphertext = data[16:]
         assert self.key is not None
-        cipher = Cipher(
-            algorithms.AES(self.key),
-            modes.CBC(initialization_vector),
-            backend=default_backend(),
-        )  # type: ignore
+        cipher = aes_cbc_cipher(self.key, initialization_vector)
         return cipher.decryptor().update(ciphertext)  # type: ignore
 
 
