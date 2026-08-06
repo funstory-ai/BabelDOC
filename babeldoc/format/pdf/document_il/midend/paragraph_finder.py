@@ -154,8 +154,11 @@ class ParagraphFinder:
         max_x = max(char.visual_bbox.box.x2 for char in chars)
         max_y = max(char.visual_bbox.box.y2 for char in chars)
         paragraph.box = Box(min_x, min_y, max_x, max_y)
-        paragraph.vertical = chars[0].vertical
-        paragraph.xobj_id = chars[0].xobj_id
+        metadata_char = next(
+            (char for char in chars if char.xobj_id is not None), chars[0]
+        )
+        paragraph.vertical = metadata_char.vertical
+        paragraph.xobj_id = metadata_char.xobj_id
 
         paragraph.first_line_indent = False
         if (
@@ -286,8 +289,19 @@ class ParagraphFinder:
         # 第五步：处理独立段落
         self.process_independent_paragraphs(paragraphs, median_width)
 
+        remove_margin_line_numbers = getattr(
+            self.translation_config,
+            "remove_margin_line_numbers",
+            False,
+        )
+        if remove_margin_line_numbers:
+            self.remove_margin_line_numbers(page, paragraphs)
+
         # 新增后处理：合并带行号交替的正文段落（a 正文、b 行号、c 正文 -> 合并 a 与 c，保留 b）
-        if getattr(self.translation_config, "merge_alternating_line_numbers", True):
+        if (
+            getattr(self.translation_config, "merge_alternating_line_numbers", True)
+            and not remove_margin_line_numbers
+        ):
             self.merge_alternating_line_number_paragraphs(paragraphs)
 
         for paragraph in paragraphs:
@@ -365,6 +379,19 @@ class ParagraphFinder:
                 parts.append(comp.pdf_character.char_unicode)
         return "".join(parts)
 
+    def _paragraph_chars(self, p: PdfParagraph) -> list[PdfCharacter]:
+        chars: list[PdfCharacter] = []
+        for comp in p.pdf_paragraph_composition or []:
+            if comp.pdf_line:
+                chars.extend(comp.pdf_line.pdf_character or [])
+            elif comp.pdf_same_style_characters:
+                chars.extend(comp.pdf_same_style_characters.pdf_character or [])
+            elif comp.pdf_character:
+                chars.append(comp.pdf_character)
+            elif comp.pdf_formula:
+                chars.extend(comp.pdf_formula.pdf_character or [])
+        return chars
+
     def _is_ascii_digit_or_space_paragraph(self, p: PdfParagraph) -> bool:
         text = self._paragraph_text_ascii(p)
         if not text:
@@ -378,6 +405,201 @@ class ParagraphFinder:
                 continue
             return False
         return True if has_digit or text.strip() == "" else False
+
+    def _is_ascii_digit_or_space_char(self, char: PdfCharacter) -> bool:
+        text = char.char_unicode or ""
+        return bool(text) and all(
+            (c.isdigit() and ord(c) < 128) or c.isspace() for c in text
+        )
+
+    def _line_number_tokens(self, p: PdfParagraph) -> list[str]:
+        return re.findall(r"\d+", self._paragraph_text_ascii(p))
+
+    def _looks_like_line_number_paragraph(self, p: PdfParagraph) -> bool:
+        if not self._is_ascii_digit_or_space_paragraph(p):
+            return False
+        tokens = self._line_number_tokens(p)
+        return bool(tokens) and all(len(token) <= 5 for token in tokens)
+
+    def _body_text_x_bounds(
+        self,
+        paragraphs: list[PdfParagraph],
+    ) -> tuple[float, float] | None:
+        xs: list[float] = []
+        x2s: list[float] = []
+        for paragraph in paragraphs:
+            for char in self._paragraph_chars(paragraph):
+                text = char.char_unicode or ""
+                if not text or text.isdigit() or text.isspace():
+                    continue
+                if not char.visual_bbox or not char.visual_bbox.box:
+                    continue
+                xs.append(char.visual_bbox.box.x)
+                x2s.append(char.visual_bbox.box.x2)
+        if not xs:
+            return None
+        return min(xs), max(x2s)
+
+    def _find_margin_line_number_columns(
+        self,
+        page: Page,
+        paragraphs: list[PdfParagraph],
+    ) -> list[tuple[float, float]]:
+        body_bounds = self._body_text_x_bounds(paragraphs)
+        if body_bounds is None:
+            return []
+        body_left, body_right = body_bounds
+        page_box = page.cropbox.box if page.cropbox and page.cropbox.box else None
+        page_width = (page_box.x2 - page_box.x) if page_box else 612
+        page_left = page_box.x if page_box else 0
+        page_right = page_box.x2 if page_box else page_width
+        min_gap = max(4.0, page_width * 0.008)
+
+        left_digit_ys: list[float] = []
+        right_digit_ys: list[float] = []
+        for paragraph in paragraphs:
+            for char in self._paragraph_chars(paragraph):
+                if not char.visual_bbox or not char.visual_bbox.box:
+                    continue
+                text = char.char_unicode or ""
+                if not text or not all(c.isdigit() and ord(c) < 128 for c in text):
+                    continue
+                char_box = char.visual_bbox.box
+                if char_box.x2 <= body_left - min_gap:
+                    left_digit_ys.append(char_box.y)
+                elif char_box.x >= body_right + min_gap:
+                    right_digit_ys.append(char_box.y)
+
+        columns: list[tuple[float, float]] = []
+        if len(left_digit_ys) >= 3 and (
+            max(left_digit_ys) - min(left_digit_ys) >= 20 or len(left_digit_ys) >= 6
+        ):
+            columns.append((page_left - 1.0, body_left - min_gap))
+        if len(right_digit_ys) >= 3 and (
+            max(right_digit_ys) - min(right_digit_ys) >= 20 or len(right_digit_ys) >= 6
+        ):
+            columns.append((body_right + min_gap, page_right + 1.0))
+        return columns
+
+    def _is_in_margin_line_number_column(
+        self,
+        char: PdfCharacter,
+        columns: list[tuple[float, float]],
+    ) -> bool:
+        if not char.visual_bbox or not char.visual_bbox.box:
+            return False
+        if not self._is_ascii_digit_or_space_char(char):
+            return False
+        char_box = char.visual_bbox.box
+        text = char.char_unicode or ""
+        for x, x2 in columns:
+            if char_box.x >= x and char_box.x2 <= x2:
+                return True
+            if text.isspace() and char_box.x >= x and char_box.x < x2:
+                return True
+        return False
+
+    def _paragraph_inside_margin_line_number_column(
+        self,
+        paragraph: PdfParagraph,
+        columns: list[tuple[float, float]],
+    ) -> bool:
+        if not paragraph.box:
+            return False
+        return any(
+            paragraph.box.x >= x - 0.5 and paragraph.box.x2 <= x2 + 0.5
+            for x, x2 in columns
+        )
+
+    def _remove_margin_line_number_chars(
+        self,
+        paragraph: PdfParagraph,
+        columns: list[tuple[float, float]],
+    ) -> bool:
+        removed = False
+        new_compositions: list[PdfParagraphComposition] = []
+        for composition in paragraph.pdf_paragraph_composition or []:
+            if composition.pdf_line:
+                old_chars = composition.pdf_line.pdf_character or []
+                new_chars = [
+                    char
+                    for char in old_chars
+                    if not self._is_in_margin_line_number_column(char, columns)
+                ]
+                if len(new_chars) != len(old_chars):
+                    removed = True
+                if new_chars:
+                    composition.pdf_line.pdf_character = new_chars
+                    self.update_line_data(composition.pdf_line)
+                    new_compositions.append(composition)
+            elif composition.pdf_same_style_characters:
+                old_chars = composition.pdf_same_style_characters.pdf_character or []
+                new_chars = [
+                    char
+                    for char in old_chars
+                    if not self._is_in_margin_line_number_column(char, columns)
+                ]
+                if len(new_chars) != len(old_chars):
+                    removed = True
+                if new_chars:
+                    composition.pdf_same_style_characters.pdf_character = new_chars
+                    new_compositions.append(composition)
+            elif composition.pdf_character:
+                if self._is_in_margin_line_number_column(
+                    composition.pdf_character,
+                    columns,
+                ):
+                    removed = True
+                    continue
+                new_compositions.append(composition)
+            else:
+                new_compositions.append(composition)
+
+        if removed:
+            paragraph.pdf_paragraph_composition = new_compositions
+        return removed
+
+    def remove_margin_line_numbers(
+        self,
+        page: Page,
+        paragraphs: list[PdfParagraph],
+    ):
+        columns = self._find_margin_line_number_columns(page, paragraphs)
+        if not columns:
+            logger.debug("No margin line number columns detected")
+            return
+
+        filtered_paragraphs: list[PdfParagraph] = []
+        removed_paragraph_count = 0
+        removed_char_count = 0
+        for paragraph in paragraphs:
+            if self._looks_like_line_number_paragraph(
+                paragraph
+            ) and self._paragraph_inside_margin_line_number_column(
+                paragraph,
+                columns,
+            ):
+                removed_paragraph_count += 1
+                continue
+
+            before_char_count = len(self._paragraph_chars(paragraph))
+            if self._remove_margin_line_number_chars(paragraph, columns):
+                removed_char_count += before_char_count - len(
+                    self._paragraph_chars(paragraph)
+                )
+                if not self._paragraph_chars(paragraph):
+                    continue
+                self.update_paragraph_data(paragraph, update_unicode=True)
+            filtered_paragraphs.append(paragraph)
+
+        paragraphs[:] = filtered_paragraphs
+        page.pdf_paragraph = paragraphs
+        if removed_paragraph_count or removed_char_count:
+            logger.info(
+                "Removed margin line numbers: %s paragraphs, %s characters",
+                removed_paragraph_count,
+                removed_char_count,
+            )
 
     @staticmethod
     def _same_layout_and_xobj(a: PdfParagraph, c: PdfParagraph) -> bool:

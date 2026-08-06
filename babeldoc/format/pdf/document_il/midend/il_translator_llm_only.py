@@ -271,6 +271,14 @@ class ILTranslatorLLMOnly:
             "paragraph_hybrid",
         )
 
+    def _is_reference_paragraph(self, paragraph: PdfParagraph) -> bool:
+        """Skip bibliography/reference sections in local translation flow."""
+        return paragraph.layout_label in (
+            "reference",
+            "reference_content",
+            "reference_hybrid",
+        )
+
     def _should_translate_paragraph(
         self,
         paragraph: PdfParagraph,
@@ -301,6 +309,10 @@ class ILTranslatorLLMOnly:
 
         # Minimum length check
         if len(paragraph.unicode) < self.translation_config.min_text_length:
+            return False
+
+        # Reference section should not be translated.
+        if self._is_reference_paragraph(paragraph):
             return False
 
         # Body text check if requested

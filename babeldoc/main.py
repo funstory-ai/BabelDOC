@@ -337,6 +337,12 @@ def create_parser():
         help="Disable post-processing that merges alternating line-number layouts (by default this feature is enabled).",
     )
     translation_group.add_argument(
+        "--remove-margin-line-numbers",
+        action="store_true",
+        default=False,
+        help="Remove margin line numbers before translation.",
+    )
+    translation_group.add_argument(
         "--skip-translation",
         action="store_true",
         default=False,
@@ -728,6 +734,7 @@ async def main():
             save_auto_extracted_glossary=args.save_auto_extracted_glossary,
             enable_graphic_element_process=not args.disable_graphic_element_process,
             merge_alternating_line_numbers=args.merge_alternating_line_numbers,
+            remove_margin_line_numbers=args.remove_margin_line_numbers,
             skip_translation=args.skip_translation,
             skip_form_render=args.skip_form_render,
             skip_curve_render=args.skip_curve_render,
