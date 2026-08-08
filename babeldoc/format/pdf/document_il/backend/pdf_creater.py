@@ -425,16 +425,17 @@ def parse_mapping(text):
 
 
 def apply_normalization(cmap, gid, code):
-    need = False
-    if 0x2F00 <= code <= 0x2FD5:  # Kangxi Radicals
-        need = True
-    if 0xF900 <= code <= 0xFAFF:  # CJK Compatibility Ideographs
-        need = True
-    if need:
-        norm = unicodedata.normalize("NFD", chr(code))
-        cmap[gid] = ord(norm)
-    else:
-        cmap[gid] = code
+    # Non-canonical Kangxi Radicals (U+2F00-U+2FD5) / CJK Compatibility Ideographs
+    # (U+F900-U+FAFF) are copied verbatim by viewers; NFKC decomposes both,
+    # whereas NFD alone cannot decompose Kangxi Radicals.
+    if 0x2F00 <= code <= 0x2FD5 or 0xF900 <= code <= 0xFAFF:
+        norm = unicodedata.normalize("NFKC", chr(code))
+        # Keep the original when the canonical form spans multiple codepoints,
+        # to avoid changing text layout.
+        if len(norm) == 1:
+            cmap[gid] = ord(norm[0])
+            return
+    cmap[gid] = code
 
 
 def batched(iterable, n, *, strict=False):
@@ -523,16 +524,16 @@ def make_tounicode(cmap, used):
 
 def reproduce_one_font(doc, index):
     m = doc.xref_get_key(index, "ToUnicode")
-    f = doc.xref_get_key(index, "DescendantFonts")
-    if m[0] == "xref" and f[0] == "array":
+    if m[0] == "xref":
         mi = to_int(m[1])
-        fi = to_int(f[1])
-        ff = doc.xref_get_key(fi, "FontDescriptor/FontFile2")
-        ms = doc.xref_stream(mi)
-        fs = doc.xref_stream(to_int(ff[1]))
-        cmap = parse_tounicode_cmap(ms)
-        used = parse_truetype_data(fs)
-        text = make_tounicode(cmap, used)
+        # Re-emit the whole parsed CMap. The old code filtered glyphs by outline,
+        # which dropped used but outline-less glyphs (spaces, combining marks)
+        # and created copy/paste gaps.
+        cmap = parse_tounicode_cmap(doc.xref_stream(mi))
+        if not cmap:
+            # Leave the existing CMap untouched if parsing yields nothing.
+            return
+        text = make_tounicode(cmap, cmap.keys())
         doc.update_stream(mi, bytes(text, "U8"))
 
 
@@ -543,7 +544,13 @@ def reproduce_cmap(doc):
         try:
             font_list = page.get_fonts()
             for font in font_list:
-                if font[1] == "ttf" and font[3] in FONT_NAMES and ".ttf" in font[4]:
+                if (
+                    font[1] == "ttf"
+                    # Subsetted fonts get a random "XXXXXX+" prefix in their
+                    # BaseFont name; strip it so the name still matches FONT_NAMES.
+                    and font[3].split("+", 1)[-1] in FONT_NAMES
+                    and ".ttf" in font[4]
+                ):
                     font_set.add(font)
         except Exception as e:
             logger.error(f"Error in getting page fonts: {e}")
