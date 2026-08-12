@@ -425,16 +425,17 @@ def parse_mapping(text):
 
 
 def apply_normalization(cmap, gid, code):
-    need = False
-    if 0x2F00 <= code <= 0x2FD5:  # Kangxi Radicals
-        need = True
-    if 0xF900 <= code <= 0xFAFF:  # CJK Compatibility Ideographs
-        need = True
-    if need:
-        norm = unicodedata.normalize("NFD", chr(code))
-        cmap[gid] = ord(norm)
-    else:
-        cmap[gid] = code
+    # Non-canonical Kangxi Radicals (U+2F00-U+2FD5) / CJK Compatibility Ideographs
+    # (U+F900-U+FAFF) are copied verbatim by viewers; NFKC decomposes both,
+    # whereas NFD alone cannot decompose Kangxi Radicals.
+    if 0x2F00 <= code <= 0x2FD5 or 0xF900 <= code <= 0xFAFF:
+        norm = unicodedata.normalize("NFKC", chr(code))
+        # Keep the original when the canonical form spans multiple codepoints,
+        # to avoid changing text layout.
+        if len(norm) == 1:
+            cmap[gid] = ord(norm[0])
+            return
+    cmap[gid] = code
 
 
 def batched(iterable, n, *, strict=False):
@@ -501,15 +502,45 @@ end"""
 
 
 def make_tounicode(cmap, used):
-    short = []
-    for x in used:
-        if x in cmap:
-            short.append((x, cmap[x]))
+    short = sorted((x, cmap[x]) for x in used if x in cmap)
+    ranges = []
+    chars = []
+    i, n = 0, len(short)
+    while i < n:
+        cid, code = short[i]
+        j = i
+        while (
+            j + 1 < n
+            and short[j + 1][0] == short[j][0] + 1
+            and short[j + 1][1] == short[j][1] + 1
+            and short[j + 1][1] < 0x10000
+        ):
+            j += 1
+        if j >= i + 1:
+            # A run where both CID and codepoint increment by one becomes a
+            # bfrange; keeps a full-range source CMap compact instead of one
+            # bfchar per CID.
+            ranges.append((short[i][0], short[j][0], code))
+            i = j + 1
+        else:
+            chars.append((cid, code))
+            i += 1
     line = [TOUNICODE_HEAD]
-    for block in batched(short, 100):
+    for block in batched(ranges, 100):
+        line.append(f"{len(block)} beginbfrange")
+        for a, b, d in block:
+            line.append(f"<{a:04x}> <{b:04x}> <{d:04x}>")
+        line.append("endbfrange")
+    for block in batched(chars, 100):
         line.append(f"{len(block)} beginbfchar")
         for glyph, code in block:
-            if code < 0x10000:
+            high = code >> 16
+            low = code & 0xFFFF
+            if 0xD800 <= high <= 0xDBFF and 0xDC00 <= low <= 0xDFFF:
+                # Already an encoded surrogate pair; re-emitting it as a
+                # codepoint would double-encode and break copy/paste.
+                line.append(f"<{glyph:04x}><{high:04x}{low:04x}>")
+            elif code < 0x10000:
                 line.append(f"<{glyph:04x}><{code:04x}>")
             else:
                 code -= 0x10000
@@ -523,16 +554,17 @@ def make_tounicode(cmap, used):
 
 def reproduce_one_font(doc, index):
     m = doc.xref_get_key(index, "ToUnicode")
-    f = doc.xref_get_key(index, "DescendantFonts")
-    if m[0] == "xref" and f[0] == "array":
+    if m[0] == "xref":
         mi = to_int(m[1])
-        fi = to_int(f[1])
-        ff = doc.xref_get_key(fi, "FontDescriptor/FontFile2")
-        ms = doc.xref_stream(mi)
-        fs = doc.xref_stream(to_int(ff[1]))
-        cmap = parse_tounicode_cmap(ms)
-        used = parse_truetype_data(fs)
-        text = make_tounicode(cmap, used)
+        # Re-emit the parsed CMap, normalizing CJK compatibility codepoints.
+        # Emit the whole map but in compact bfrange form: filtering by outline
+        # dropped used but outline-less glyphs (spaces, combining marks), and a
+        # later full bfchar expansion bloated subsetted fonts ~20x.
+        cmap = parse_tounicode_cmap(doc.xref_stream(mi))
+        if not cmap:
+            # Leave the existing CMap untouched if parsing yields nothing.
+            return
+        text = make_tounicode(cmap, cmap.keys())
         doc.update_stream(mi, bytes(text, "U8"))
 
 
@@ -543,7 +575,13 @@ def reproduce_cmap(doc):
         try:
             font_list = page.get_fonts()
             for font in font_list:
-                if font[1] == "ttf" and font[3] in FONT_NAMES and ".ttf" in font[4]:
+                if (
+                    font[1] == "ttf"
+                    # Subsetted fonts get a random "XXXXXX+" prefix in their
+                    # BaseFont name; strip it so the name still matches FONT_NAMES.
+                    and font[3].split("+", 1)[-1] in FONT_NAMES
+                    and ".ttf" in font[4]
+                ):
                     font_set.add(font)
         except Exception as e:
             logger.error(f"Error in getting page fonts: {e}")
