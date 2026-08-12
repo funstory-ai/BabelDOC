@@ -513,7 +513,7 @@ def make_tounicode(cmap, used):
             j + 1 < n
             and short[j + 1][0] == short[j][0] + 1
             and short[j + 1][1] == short[j][1] + 1
-            and code + (j - i) < 0x10000
+            and short[j + 1][1] < 0x10000
         ):
             j += 1
         if j >= i + 1:
