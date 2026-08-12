@@ -502,15 +502,45 @@ end"""
 
 
 def make_tounicode(cmap, used):
-    short = []
-    for x in used:
-        if x in cmap:
-            short.append((x, cmap[x]))
+    short = sorted((x, cmap[x]) for x in used if x in cmap)
+    ranges = []
+    chars = []
+    i, n = 0, len(short)
+    while i < n:
+        cid, code = short[i]
+        j = i
+        while (
+            j + 1 < n
+            and short[j + 1][0] == short[j][0] + 1
+            and short[j + 1][1] == short[j][1] + 1
+            and code + (j - i) < 0x10000
+        ):
+            j += 1
+        if j >= i + 1:
+            # A run where both CID and codepoint increment by one becomes a
+            # bfrange; keeps a full-range source CMap compact instead of one
+            # bfchar per CID.
+            ranges.append((short[i][0], short[j][0], code))
+            i = j + 1
+        else:
+            chars.append((cid, code))
+            i += 1
     line = [TOUNICODE_HEAD]
-    for block in batched(short, 100):
+    for block in batched(ranges, 100):
+        line.append(f"{len(block)} beginbfrange")
+        for a, b, d in block:
+            line.append(f"<{a:04x}> <{b:04x}> <{d:04x}>")
+        line.append("endbfrange")
+    for block in batched(chars, 100):
         line.append(f"{len(block)} beginbfchar")
         for glyph, code in block:
-            if code < 0x10000:
+            high = code >> 16
+            low = code & 0xFFFF
+            if 0xD800 <= high <= 0xDBFF and 0xDC00 <= low <= 0xDFFF:
+                # Already an encoded surrogate pair; re-emitting it as a
+                # codepoint would double-encode and break copy/paste.
+                line.append(f"<{glyph:04x}><{high:04x}{low:04x}>")
+            elif code < 0x10000:
                 line.append(f"<{glyph:04x}><{code:04x}>")
             else:
                 code -= 0x10000
@@ -526,9 +556,10 @@ def reproduce_one_font(doc, index):
     m = doc.xref_get_key(index, "ToUnicode")
     if m[0] == "xref":
         mi = to_int(m[1])
-        # Re-emit the whole parsed CMap. The old code filtered glyphs by outline,
-        # which dropped used but outline-less glyphs (spaces, combining marks)
-        # and created copy/paste gaps.
+        # Re-emit the parsed CMap, normalizing CJK compatibility codepoints.
+        # Emit the whole map but in compact bfrange form: filtering by outline
+        # dropped used but outline-less glyphs (spaces, combining marks), and a
+        # later full bfchar expansion bloated subsetted fonts ~20x.
         cmap = parse_tounicode_cmap(doc.xref_stream(mi))
         if not cmap:
             # Leave the existing CMap untouched if parsing yields nothing.
