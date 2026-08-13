@@ -47,10 +47,10 @@ def recover_unencoded_subset_map(font_face: object) -> dict[int, str]:
     retain the original glyph IDs. This is the convention used by legacy
     Microsoft core fonts, where glyph ID 55, for example, represents ``T``.
     """
-    recovered: dict[int, str] = {}
     try:
         charmaps = getattr(font_face, "charmaps", ()) or (None,)
         for charmap in charmaps:
+            recovered: dict[int, str] = {}
             if charmap is not None:
                 font_face.set_charmap(charmap)
             char_code, glyph_index = font_face.get_first_char()
@@ -65,9 +65,11 @@ def recover_unencoded_subset_map(font_face: object) -> dict[int, str]:
                     char_code,
                     glyph_index,
                 )
+            if recovered:
+                return recovered
     except Exception:
         return {}
-    return recovered
+    return {}
 
 
 def _recover_unencoded_core_font_subset_map(
@@ -423,6 +425,7 @@ def _build_simple_font_backend(
         stream_value=stream_value,
     )
 
+    has_embedded_type1_encoding = False
     if "Encoding" not in spec and "FontFile" in descriptor:
         try:
             fontfile = stream_value(descriptor.get("FontFile"))
@@ -432,11 +435,18 @@ def _build_simple_font_backend(
             if b"/Encoding" in data:
                 offset = data.index(b"/Encoding")
             parser = Type1FontHeaderParser(BytesIO(data[offset:]))
-            cid2unicode = parser.get_encoding()
+            embedded_encoding = parser.get_encoding()
+            if embedded_encoding:
+                cid2unicode = embedded_encoding
+                has_embedded_type1_encoding = True
         except Exception:
             pass
 
-    if "Encoding" not in spec and "ToUnicode" not in spec:
+    if (
+        "Encoding" not in spec
+        and "ToUnicode" not in spec
+        and not has_embedded_type1_encoding
+    ):
         recovered = _recover_unencoded_core_font_subset_map(descriptor, basefont)
         if recovered:
             cid2unicode = recovered
