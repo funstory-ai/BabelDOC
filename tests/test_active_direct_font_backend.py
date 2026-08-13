@@ -149,10 +149,17 @@ def test_does_not_recover_an_arial_subset_with_a_tounicode_map(monkeypatch):
 
 
 def test_does_not_recover_a_non_core_font_subset(monkeypatch):
+    face_load_attempted = False
+
+    def face_loader(_data):
+        nonlocal face_load_attempted
+        face_load_attempted = True
+        raise AssertionError("non-core fonts must not be loaded for recovery")
+
     monkeypatch.setattr(
         active_direct_font_backend,
         "freetype",
-        object(),
+        type("FreeType", (), {"Face": staticmethod(face_loader)}),
     )
 
     recovered = active_direct_font_backend._recover_unencoded_core_font_subset_map(
@@ -160,6 +167,7 @@ def test_does_not_recover_a_non_core_font_subset(monkeypatch):
         "Helvetica_Subset",
     )
 
+    assert face_load_attempted is False
     assert recovered == {}
 
 
