@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from io import BytesIO
+
+import freetype
 
 from babeldoc.format.pdf.new_parser.active_value_access import dict_value
 from babeldoc.format.pdf.new_parser.active_value_access import int_value
@@ -34,6 +37,59 @@ from babeldoc.format.pdf.new_parser.runtime.font_widths import get_widths
 from babeldoc.format.pdf.new_parser.runtime.font_widths import get_widths2
 from babeldoc.format.pdf.new_parser.runtime.object_primitives_runtime import resolve1
 from babeldoc.format.pdf.new_parser.state import apply_matrix_norm
+
+
+def recover_unencoded_subset_map(font_face: object) -> dict[int, str]:
+    """Recover character codes from ``G<glyph-id>`` names in subset fonts.
+
+    Some Type1/CFF subset fonts omit both ``/Encoding`` and ``/ToUnicode``.
+    Their embedded program can still expose a custom cmap whose glyph names
+    retain the original glyph IDs. This is the convention used by legacy
+    Microsoft core fonts, where glyph ID 55, for example, represents ``T``.
+    """
+    recovered: dict[int, str] = {}
+    try:
+        charmaps = getattr(font_face, "charmaps", ()) or (None,)
+        for charmap in charmaps:
+            if charmap is not None:
+                font_face.set_charmap(charmap)
+            char_code, glyph_index = font_face.get_first_char()
+            while glyph_index:
+                glyph_name = font_face.get_glyph_name(glyph_index).decode("ascii")
+                match = re.fullmatch(r"G(\d+)", glyph_name)
+                if match:
+                    original_glyph_id = int(match.group(1))
+                    if 3 <= original_glyph_id <= 97:
+                        recovered[char_code] = chr(original_glyph_id + 29)
+                char_code, glyph_index = font_face.get_next_char(
+                    char_code,
+                    glyph_index,
+                )
+    except Exception:
+        return {}
+    return recovered
+
+
+def _recover_unencoded_core_font_subset_map(
+    descriptor: Mapping[object, object],
+    font_name: str | bytes,
+) -> dict[int, str]:
+    """Recover an omitted encoding from an embedded Arial/Times subset font."""
+    if not re.search(r"Arial|Times[_ ]New[_ ]Roman", str(font_name)):
+        return {}
+
+    for file_key in ("FontFile", "FontFile2", "FontFile3"):
+        font_file = descriptor.get(file_key)
+        if font_file is None:
+            continue
+        try:
+            font_face = freetype.Face(BytesIO(stream_value(font_file).get_data()))
+            recovered = recover_unencoded_subset_map(font_face)
+            if recovered:
+                return recovered
+        except Exception:
+            continue
+    return {}
 
 
 def _normalize_font_name_like_pdfminer(value: object) -> str | bytes:
@@ -379,6 +435,11 @@ def _build_simple_font_backend(
             cid2unicode = parser.get_encoding()
         except Exception:
             pass
+
+    if "Encoding" not in spec and "ToUnicode" not in spec:
+        recovered = _recover_unencoded_core_font_subset_map(descriptor, basefont)
+        if recovered:
+            cid2unicode = recovered
 
     descent = num_value(descriptor.get("Descent", 0))
     ascent = num_value(descriptor.get("Ascent", 0))
