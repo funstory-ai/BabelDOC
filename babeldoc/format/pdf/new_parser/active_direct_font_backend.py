@@ -75,7 +75,7 @@ def _recover_unencoded_core_font_subset_map(
     font_name: str | bytes,
 ) -> dict[int, str]:
     """Recover an omitted encoding from an embedded Arial/Times subset font."""
-    if not re.search(r"Arial|Times[_ ]New[_ ]Roman", str(font_name)):
+    if not re.search(r"Arial|Times[_ ]?New[_ ]?Roman", str(font_name)):
         return {}
 
     for file_key in ("FontFile", "FontFile2", "FontFile3"):
