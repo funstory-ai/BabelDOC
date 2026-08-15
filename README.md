@@ -426,12 +426,12 @@ step by step.
 
 <h2 id="star_hist">Star History</h2>
 
-<a href="https://star-history.com/#funstory-ai/babeldoc&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=funstory-ai/babeldoc&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=funstory-ai/babeldoc&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=funstory-ai/babeldoc&type=Date"/>
- </picture>
+<a href="https://star-history.dera.page/#funstory-ai/babeldoc&type=Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=funstory-ai/babeldoc&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=funstory-ai/babeldoc&type=Date" />
+    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=funstory-ai/babeldoc&type=Date"/>
+  </picture>
 </a>
 
 > [!WARNING]
