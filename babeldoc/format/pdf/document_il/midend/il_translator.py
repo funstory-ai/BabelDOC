@@ -46,6 +46,8 @@ from babeldoc.utils.priority_thread_pool_executor import PriorityThreadPoolExecu
 
 logger = logging.getLogger(__name__)
 
+EXCESSIVE_PUNCTUATION_RE = re.compile(r"[. 。…，]{20,}")
+
 
 PROMPT_TEMPLATE = Template(
     """$role_block
@@ -997,7 +999,10 @@ class ILTranslator:
     ):
         """Post-translation processing: update paragraph with translated text."""
         tracker.set_output(translated_text)
-        if translated_text == translate_input:
+        normalized_input = EXCESSIVE_PUNCTUATION_RE.sub(
+            ".", translate_input.unicode
+        )
+        if translated_text == normalized_input:
             if llm_translate_tracker := tracker.last_llm_translate_tracker():
                 llm_translate_tracker.set_placeholder_full_match()
             return False
@@ -1260,7 +1265,9 @@ class ILTranslator:
                             "paragraph_token_count": paragraph_token_count
                         },
                     )
-                translated_text = re.sub(r"[. 。…，]{20,}", ".", translated_text)
+                translated_text = EXCESSIVE_PUNCTUATION_RE.sub(
+                    ".", translated_text
+                )
 
                 # Post-translation processing
                 self.post_translate_paragraph(
