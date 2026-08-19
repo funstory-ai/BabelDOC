@@ -1,6 +1,5 @@
 import json
 import logging
-import re
 from pathlib import Path
 from string import Template
 
@@ -751,7 +750,9 @@ class ILTranslatorLLMOnly:
                         continue
 
                     # Clean up any excessive punctuation in the translated text
-                    translated_text = re.sub(r"[. 。…，]{20,}", ".", output)
+                    translated_text = il_translator.EXCESSIVE_PUNCTUATION_RE.sub(
+                        ".", output
+                    )
 
                     # Get the original input for this translation
                     translate_input = inputs[id_][1]
@@ -760,7 +761,9 @@ class ILTranslatorLLMOnly:
                     input_unicode = inputs[id_][0]
                     output_unicode = translated_text
 
-                    trimed_input = re.sub(r"[. 。…，]{20,}", ".", input_unicode)
+                    trimed_input = il_translator.EXCESSIVE_PUNCTUATION_RE.sub(
+                        ".", input_unicode
+                    )
 
                     input_token_count = self.calc_token_count(trimed_input)
                     output_token_count = self.calc_token_count(output_unicode)
