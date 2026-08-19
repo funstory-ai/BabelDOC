@@ -997,7 +997,12 @@ class ILTranslator:
     ):
         """Post-translation processing: update paragraph with translated text."""
         tracker.set_output(translated_text)
-        if translated_text == translate_input.unicode:
+        normalized_input = re.sub(
+            r"[. 。…，]{20,}",
+            ".",
+            translate_input.unicode,
+        )
+        if translated_text == normalized_input:
             if llm_translate_tracker := tracker.last_llm_translate_tracker():
                 llm_translate_tracker.set_placeholder_full_match()
             return False
