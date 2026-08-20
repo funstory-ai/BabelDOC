@@ -995,4 +995,8 @@ class ILTranslatorLLMOnly:
             llm_output = llm_output[3:]
         if llm_output.endswith("```"):
             llm_output = llm_output[:-3]
-        return llm_output.strip()
+        llm_output = llm_output.strip()
+        # JSON allows \n \t \r as whitespace; other C0 controls make json.loads fail.
+        return "".join(
+            char for char in llm_output if ord(char) >= 32 or char in "\n\t\r"
+        )
