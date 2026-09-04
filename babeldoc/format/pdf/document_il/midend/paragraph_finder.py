@@ -606,7 +606,6 @@ class ParagraphFinder:
         PDF bounding box. This helps use more accurate layout information when available.
         """
         visual_box = char.visual_bbox.box
-        return visual_box.y, visual_box.y2
         pdf_box = char.box
         if calculate_iou_for_boxes(visual_box, pdf_box) >= 0.5:
             return visual_box.y, visual_box.y2
