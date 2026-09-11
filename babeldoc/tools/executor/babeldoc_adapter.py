@@ -7,7 +7,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import pyarrow
 from babeldoc import __version__ as babeldoc_version
 from babeldoc.format.pdf.translation_config import TranslateResult
 from babeldoc.format.pdf.translation_config import TranslationConfig
@@ -239,6 +238,10 @@ def build_translation_config(
         ),
         metadata_extra_data=_optional_str(metadata, "metadata_extra_data"),
         term_pool_max_workers=_required_int(runtime_limits, "term_pool_max_workers"),
+        enable_translation_tracking=_optional_bool(
+            translation,
+            "enable_translation_tracking",
+        ),
     )
     mark("translation_config", started_at)
 
@@ -286,7 +289,7 @@ def translate_result_to_payload(
             workroot, result.auto_extracted_glossary_path
         ),
     }
-    return {
+    payload = {
         "files": {key: value for key, value in files.items() if value},
         "metrics": {
             "time_consume_seconds": _number_or_zero(
@@ -304,6 +307,9 @@ def translate_result_to_payload(
         },
         "pages": _pages_to_string(config),
     }
+    if config.enable_translation_tracking:
+        payload["translation_tracking"] = result.translation_tracking
+    return payload
 
 
 def _run_async_translate(config: TranslationConfig, emit) -> TranslateResult:
@@ -456,6 +462,13 @@ def _optional_str(root: dict[str, Any], key: str) -> str | None:
 
 def _required_bool(root: dict[str, Any], key: str) -> bool:
     value = root.get(key)
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{key} must be a boolean")
+
+
+def _optional_bool(root: dict[str, Any], key: str, default: bool = False) -> bool:
+    value = root.get(key, default)
     if isinstance(value, bool):
         return value
     raise ValueError(f"{key} must be a boolean")

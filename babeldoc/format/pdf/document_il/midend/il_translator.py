@@ -47,6 +47,21 @@ from babeldoc.utils.priority_thread_pool_executor import PriorityThreadPoolExecu
 logger = logging.getLogger(__name__)
 
 
+def _box_to_dict(box: il_version_1.Box | None) -> dict[str, float] | None:
+    """Box in PDF points, origin at the bottom left of the page."""
+    if box is None:
+        return None
+    return {"x": box.x, "y": box.y, "x2": box.x2, "y2": box.y2}
+
+
+def _char_boxes(characters: list[il_version_1.PdfCharacter] | None) -> list[dict]:
+    """Per character geometry, for callers that need to locate a sub span."""
+    return [
+        {"char": char.char_unicode, "box": _box_to_dict(char.box)}
+        for char in characters or []
+    ]
+
+
 PROMPT_TEMPLATE = Template(
     """$role_block
 
@@ -91,7 +106,7 @@ class RichTextPlaceholder:
         self.left_regex_pattern = left_regex_pattern
         self.right_regex_pattern = right_regex_pattern
 
-    def to_dict(self) -> dict:
+    def to_dict(self, char_boxes: bool = False) -> dict:
         return {
             "type": "rich_text",
             "id": self.id,
@@ -99,6 +114,10 @@ class RichTextPlaceholder:
             "right_placeholder": self.right_placeholder,
             "left_regex_pattern": self.left_regex_pattern,
             "right_regex_pattern": self.right_regex_pattern,
+            "box": _box_to_dict(self.composition.box) if self.composition else None,
+            "char_boxes": _char_boxes(self.composition.pdf_character)
+            if char_boxes and self.composition
+            else [],
             "composition_chars": get_char_unicode_string(self.composition.pdf_character)
             if self.composition and self.composition.pdf_character
             else None,
@@ -118,12 +137,16 @@ class FormulaPlaceholder:
         self.placeholder = placeholder
         self.regex_pattern = regex_pattern
 
-    def to_dict(self) -> dict:
+    def to_dict(self, char_boxes: bool = False) -> dict:
         return {
             "type": "formula",
             "id": self.id,
             "placeholder": self.placeholder,
             "regex_pattern": self.regex_pattern,
+            "box": _box_to_dict(self.formula.box) if self.formula else None,
+            "char_boxes": _char_boxes(self.formula.pdf_character)
+            if char_boxes and self.formula
+            else [],
             "formula_chars": get_char_unicode_string(self.formula.pdf_character)
             if self.formula and self.formula.pdf_character
             else None,
@@ -142,29 +165,41 @@ class PbarContext:
 
 
 class DocumentTranslateTracker:
-    def __init__(self):
+    def __init__(self, enabled: bool = True, char_boxes: bool = False):
+        self.enabled = enabled
         self.page = []
         self.cross_page = []
         # Track paragraphs that are combined due to cross-column detection within the same page
         self.cross_column = []
+        # Per character geometry is verbose, so it is only collected on demand.
+        self.char_boxes = char_boxes
+        self.disabled_page = (
+            PageTranslateTracker(enabled=False) if not enabled else None
+        )
 
     def new_page(self):
+        if not self.enabled:
+            return self.disabled_page
         page = PageTranslateTracker()
         self.page.append(page)
         return page
 
     def new_cross_page(self):
+        if not self.enabled:
+            return self.disabled_page
         page = PageTranslateTracker()
         self.cross_page.append(page)
         return page
 
     def new_cross_column(self):
         """Create and return a new PageTranslateTracker dedicated to cross-column merging."""
+        if not self.enabled:
+            return self.disabled_page
         page = PageTranslateTracker()
         self.cross_column.append(page)
         return page
 
-    def to_json(self):
+    def to_dict(self) -> dict:
         pages = []
         for page in self.page:
             paragraphs = self.convert_paragraph(page)
@@ -177,17 +212,16 @@ class DocumentTranslateTracker:
         for page in self.cross_column:
             paragraphs = self.convert_paragraph(page)
             cross_column.append({"paragraph": paragraphs})
-        return json.dumps(
-            {
-                "cross_page": cross_page,
-                "cross_column": cross_column,
-                "page": pages,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
+        return {
+            "cross_page": cross_page,
+            "cross_column": cross_column,
+            "page": pages,
+        }
 
-    def convert_paragraph(self, page):
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+
+    def convert_paragraph(self, page) -> list[dict]:
         paragraphs = []
         for para in page.paragraph:
             i_str = getattr(para, "input", None)
@@ -210,7 +244,7 @@ class DocumentTranslateTracker:
             placeholders_json = []
             if placeholders:
                 for placeholder in placeholders:
-                    placeholders_json.append(placeholder.to_dict())
+                    placeholders_json.append(placeholder.to_dict(self.char_boxes))
 
             if pdf_unicode is None or i_str is None:
                 continue
@@ -218,6 +252,9 @@ class DocumentTranslateTracker:
                 "input": i_str,
                 "output": o_str,
                 "pdf_unicode": pdf_unicode,
+                "page_number": getattr(para, "page_number", None),
+                "box": getattr(para, "box", None),
+                "layout_label": getattr(para, "layout_label", None),
                 "llm_translate_trackers": llm_translate_trackers_json,
                 "placeholders": placeholders_json,
                 "multi_paragraph_id": getattr(para, "multi_paragraph_id", None),
@@ -232,66 +269,102 @@ class DocumentTranslateTracker:
 
 
 class PageTranslateTracker:
-    def __init__(self):
+    def __init__(self, enabled: bool = True):
+        self.enabled = enabled
         self.paragraph = []
+        self.disabled_paragraph = (
+            ParagraphTranslateTracker(enabled=False) if not enabled else None
+        )
 
     def new_paragraph(self):
+        if not self.enabled:
+            return self.disabled_paragraph
         paragraph = ParagraphTranslateTracker()
         self.paragraph.append(paragraph)
         return paragraph
 
 
 class ParagraphTranslateTracker:
-    def __init__(self):
+    def __init__(self, enabled: bool = True):
+        self.enabled = enabled
         self.llm_translate_trackers = []
         self.original_placeholders: dict[str, int] = {}
         self.removed_hallucinated_placeholders: dict[str, int] = {}
+        self.disabled_llm_translate_tracker = (
+            LLMTranslateTracker(enabled=False) if not enabled else None
+        )
 
     def set_pdf_unicode(self, unicode: str):
-        self.pdf_unicode = unicode
+        if self.enabled:
+            self.pdf_unicode = unicode
+
+    def set_geometry(self, page_number: int | None, box: il_version_1.Box | None):
+        """Record where the paragraph sits in the source document.
+
+        The page number is 0 based within the document (or within the split part,
+        see `high_level.do_translate`).
+        """
+        if self.enabled:
+            self.page_number = page_number
+            self.box = _box_to_dict(box)
+
+    def set_layout_label(self, layout_label: str | None):
+        if self.enabled:
+            self.layout_label = layout_label
 
     def set_input(self, input_text: str):
-        self.input = input_text
+        if self.enabled:
+            self.input = input_text
 
     def set_placeholders(
         self, placeholders: list[RichTextPlaceholder | FormulaPlaceholder]
     ):
-        self.placeholders = placeholders
+        if self.enabled:
+            self.placeholders = placeholders
 
     def set_original_placeholders(self, placeholders: dict[str, int] | None):
         """Record original placeholder-like tokens from the source text."""
-        self.original_placeholders = placeholders or {}
+        if self.enabled:
+            self.original_placeholders = placeholders or {}
 
     def record_multi_paragraph_id(self, mid):
-        self.multi_paragraph_id = mid
+        if self.enabled:
+            self.multi_paragraph_id = mid
 
     def record_multi_paragraph_index(self, index):
-        self.multi_paragraph_index = index
+        if self.enabled:
+            self.multi_paragraph_index = index
 
     def set_output(self, output: str):
-        self.output = output
+        if self.enabled:
+            self.output = output
 
     def record_removed_hallucinated_placeholder(self, token: str):
         """Record placeholder-like tokens removed from translated text."""
-        if not token:
+        if not self.enabled or not token:
             return
         self.removed_hallucinated_placeholders[token] = (
             self.removed_hallucinated_placeholders.get(token, 0) + 1
         )
 
     def new_llm_translate_tracker(self) -> LLMTranslateTracker:
+        if not self.enabled:
+            return self.disabled_llm_translate_tracker
         tracker = LLMTranslateTracker()
         self.llm_translate_trackers.append(tracker)
         return tracker
 
     def last_llm_translate_tracker(self) -> LLMTranslateTracker | None:
+        if not self.enabled:
+            return None
         if self.llm_translate_trackers:
             return self.llm_translate_trackers[-1]
         return None
 
 
 class LLMTranslateTracker:
-    def __init__(self):
+    def __init__(self, enabled: bool = True):
+        self.enabled = enabled
         self.input = ""
         self.output = ""
         self.has_error = False
@@ -300,20 +373,25 @@ class LLMTranslateTracker:
         self.fallback_to_translate = False
 
     def set_input(self, input_text: str):
-        self.input = input_text
+        if self.enabled:
+            self.input = input_text
 
     def set_output(self, output_text: str):
-        self.output = output_text
+        if self.enabled:
+            self.output = output_text
 
     def set_error_message(self, error_message: str):
-        self.has_error = True
-        self.error_message = error_message
+        if self.enabled:
+            self.has_error = True
+            self.error_message = error_message
 
     def set_placeholder_full_match(self):
-        self.placeholder_full_match = True
+        if self.enabled:
+            self.placeholder_full_match = True
 
     def set_fallback_to_translate(self):
-        self.fallback_to_translate = True
+        if self.enabled:
+            self.fallback_to_translate = True
 
     def to_dict(self):
         return {
@@ -385,9 +463,16 @@ class ILTranslator:
         except Exception:
             return 0
 
-    def translate(self, docs: Document):
+    def translate(self, docs: Document) -> DocumentTranslateTracker:
         self.docs = docs
-        tracker = DocumentTranslateTracker()
+        tracking_enabled = (
+            self.translation_config.enable_translation_tracking
+            or self.translation_config.debug
+        )
+        tracker = DocumentTranslateTracker(
+            enabled=tracking_enabled,
+            char_boxes=self.translation_config.enable_translation_tracking,
+        )
 
         if not self.translation_config.shared_context_cross_split_part.first_paragraph:
             # Try to find the first title paragraph
@@ -415,15 +500,15 @@ class ILTranslator:
                 for page in docs.page:
                     self.process_page(page, executor, pbar, tracker.new_page())
 
-        path = self.translation_config.get_working_file_path("translate_tracking.json")
-
-        if (
-            self.translation_config.debug
-            or self.translation_config.working_dir is not None
-        ):
+        if tracking_enabled:
+            path = self.translation_config.get_working_file_path(
+                "translate_tracking.json"
+            )
             logger.debug(f"save translate tracking to {path}")
             with Path(path).open("w", encoding="utf-8") as f:
                 f.write(tracker.to_json())
+
+        return tracker
 
     def find_title_paragraph(self, docs: Document) -> PdfParagraph | None:
         """Find the first paragraph with layout_label 'title' in the document.
@@ -466,12 +551,15 @@ class ILTranslator:
                         paragraph
                     )
                 )
+            para_tracker = tracker.new_paragraph()
+            para_tracker.set_geometry(page.page_number, paragraph.box)
+            para_tracker.set_layout_label(paragraph.layout_label)
             executor.submit(
                 self.translate_paragraph,
                 paragraph,
                 page,
                 pbar,
-                tracker.new_paragraph(),
+                para_tracker,
                 page_font_map,
                 page_xobj_font_map,
                 priority=1048576 - paragraph_token_count,

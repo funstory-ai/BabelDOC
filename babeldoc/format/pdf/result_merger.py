@@ -1,11 +1,15 @@
 import logging
+from collections.abc import Iterable
+from copy import deepcopy
 from pathlib import Path
 
 from pymupdf import Document
 
 from babeldoc.format.pdf.document_il.backend.pdf_creater import PDFCreater
+from babeldoc.format.pdf.translation_config import TRACKING_SECTIONS
 from babeldoc.format.pdf.translation_config import TranslateResult
 from babeldoc.format.pdf.translation_config import TranslationConfig
+from babeldoc.format.pdf.translation_config import iter_tracked_paragraphs
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +155,9 @@ class ResultMerger:
         )
         merged_result.no_watermark_mono_pdf_path = merged_no_watermark_mono_path
         merged_result.no_watermark_dual_pdf_path = merged_no_watermark_dual_path
+        merged_result.translation_tracking = self._merge_translation_tracking(
+            sorted_results.values()
+        )
 
         if merged_result.no_watermark_mono_pdf_path is None:
             merged_result.no_watermark_mono_pdf_path = merged_mono_path
@@ -169,6 +176,33 @@ class ResultMerger:
         merged_result.total_seconds = total_time
 
         return merged_result
+
+    def _merge_translation_tracking(
+        self, results: Iterable[TranslateResult]
+    ) -> dict | None:
+        """Concatenate the translation tracking of every part, in page order.
+
+        Batch ids are only unique within a part, so they are renumbered while
+        merging.
+        """
+        merged = {section: [] for section in TRACKING_SECTIONS}
+        next_batch_id = 0
+        for result in results:
+            tracking = deepcopy(result.translation_tracking)
+            if not tracking:
+                continue
+            batch_ids = {}
+            for paragraph in iter_tracked_paragraphs(tracking):
+                batch_id = paragraph["multi_paragraph_id"]
+                if batch_id is None:
+                    continue
+                if batch_id not in batch_ids:
+                    batch_ids[batch_id] = next_batch_id
+                    next_batch_id += 1
+                paragraph["multi_paragraph_id"] = batch_ids[batch_id]
+            for section in TRACKING_SECTIONS:
+                merged[section].extend(tracking[section])
+        return merged if any(merged.values()) else None
 
     def _merge_pdfs(
         self, pdf_paths: list[str | Path], output_name: str, tag: str

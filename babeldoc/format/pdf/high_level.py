@@ -52,6 +52,7 @@ from babeldoc.format.pdf.split_manager import SplitManager
 from babeldoc.format.pdf.translation_config import TranslateResult
 from babeldoc.format.pdf.translation_config import TranslationConfig
 from babeldoc.format.pdf.translation_config import WatermarkOutputMode
+from babeldoc.format.pdf.translation_config import iter_tracked_paragraphs
 from babeldoc.progress_monitor import ProgressMonitor
 from babeldoc.utils import memory
 
@@ -254,6 +255,13 @@ def translator_supports_llm(translator) -> bool:
     except Exception as exc:  # pragma: no cover - defensive logging
         logger.debug("translator %s failed llm detection: %s", translator, exc)
         return False
+
+
+def _rebase_tracked_page_numbers(tracking: dict, start_page: int) -> None:
+    """Turn the page numbers of a split part into document page numbers."""
+    for paragraph in iter_tracked_paragraphs(tracking):
+        if paragraph["page_number"] is not None:
+            paragraph["page_number"] += start_page
 
 
 def translate(translation_config: TranslationConfig) -> TranslateResult:
@@ -660,6 +668,11 @@ def do_translate(
                                     part_monitor,
                                     part_config,
                                 )
+                                if result.translation_tracking:
+                                    _rebase_tracked_page_numbers(
+                                        result.translation_tracking,
+                                        split_point.start_page,
+                                    )
                                 results[i] = result
 
                             except Exception as e:
@@ -994,13 +1007,17 @@ def _do_translate_single(
             docs
         )
 
+    translation_tracker = None
     if not translation_config.skip_translation:
         if support_llm_translate:
             il_translator = ILTranslatorLLMOnly(translate_engine, translation_config)
         else:
             il_translator = ILTranslator(translate_engine, translation_config)
 
-        il_translator.translate(docs)
+        if translation_config.enable_translation_tracking:
+            translation_tracker = il_translator.translate(docs)
+        else:
+            il_translator.translate(docs)
         del il_translator
         logger.debug(f"finish ILTranslator from {temp_pdf_path}")
     else:
@@ -1067,6 +1084,8 @@ def _do_translate_single(
         result.dual_pdf_path = result.no_watermark_dual_pdf_path
 
     result.original_pdf_path = translation_config.input_file
+    if translation_config.enable_translation_tracking and translation_tracker:
+        result.translation_tracking = translation_tracker.to_dict()
 
     return result
 
