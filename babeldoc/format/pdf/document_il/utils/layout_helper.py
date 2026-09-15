@@ -563,6 +563,20 @@ def build_layout_index(page):
     return layout_index, layout_map
 
 
+def is_paragraph_mostly_in_layout(
+    page, paragraph, class_names: tuple[str, ...], threshold: float = 0.5
+) -> bool:
+    """Check whether a paragraph's box is mostly covered by a layout of the
+    given classes (e.g. figure/image regions)."""
+    if paragraph is None or paragraph.box is None:
+        return False
+    for layout in page.page_layout or []:
+        if layout.class_name in class_names and layout.box is not None:
+            if calculate_iou_for_boxes(paragraph.box, layout.box) >= threshold:
+                return True
+    return False
+
+
 def calculate_iou_for_boxes(box1: Box, box2: Box) -> float:
     """Calculate the intersection area divided by the first box area."""
     x_left = max(box1.x, box2.x)

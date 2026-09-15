@@ -330,6 +330,12 @@ def create_parser():
         help="Disable graphic element process. (default: False)",
     )
     translation_group.add_argument(
+        "--skip-figure-text",
+        action="store_true",
+        default=False,
+        help="Keep text inside figure/image regions untranslated, preserving the original figure annotations. (default: False)",
+    )
+    translation_group.add_argument(
         "--no-merge-alternating-line-numbers",
         action="store_false",
         dest="merge_alternating_line_numbers",
@@ -727,6 +733,7 @@ async def main():
             only_include_translated_page=args.only_include_translated_page,
             save_auto_extracted_glossary=args.save_auto_extracted_glossary,
             enable_graphic_element_process=not args.disable_graphic_element_process,
+            skip_figure_text=args.skip_figure_text,
             merge_alternating_line_numbers=args.merge_alternating_line_numbers,
             skip_translation=args.skip_translation,
             skip_form_render=args.skip_form_render,

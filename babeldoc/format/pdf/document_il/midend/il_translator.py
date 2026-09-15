@@ -24,6 +24,9 @@ from babeldoc.format.pdf.document_il import PdfSameStyleUnicodeCharacters
 from babeldoc.format.pdf.document_il import PdfStyle
 from babeldoc.format.pdf.document_il.utils.fontmap import FontMapper
 from babeldoc.format.pdf.document_il.utils.layout_helper import get_char_unicode_string
+from babeldoc.format.pdf.document_il.utils.layout_helper import (
+    is_paragraph_mostly_in_layout,
+)
 from babeldoc.format.pdf.document_il.utils.layout_helper import get_paragraph_unicode
 from babeldoc.format.pdf.document_il.utils.layout_helper import is_same_style
 from babeldoc.format.pdf.document_il.utils.layout_helper import (
@@ -449,7 +452,15 @@ class ILTranslator:
         tracker: PageTranslateTracker = None,
     ):
         self.translation_config.raise_if_cancelled()
+        skip_figure_text = getattr(self.translation_config, "skip_figure_text", False)
         for paragraph in page.pdf_paragraph:
+            # skip_figure_text: 图/图片区域内的文字保持原文,不送翻译
+            if skip_figure_text and is_paragraph_mostly_in_layout(
+                page, paragraph, ("figure", "image")
+            ):
+                if pbar is not None:
+                    pbar.advance(1)
+                continue
             page_font_map = {}
             for font in page.pdf_font:
                 page_font_map[font.font_id] = font

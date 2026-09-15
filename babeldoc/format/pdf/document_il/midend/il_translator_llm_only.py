@@ -22,6 +22,9 @@ from babeldoc.format.pdf.document_il.midend.il_translator import (
     ParagraphTranslateTracker,
 )
 from babeldoc.format.pdf.document_il.utils.fontmap import FontMapper
+from babeldoc.format.pdf.document_il.utils.layout_helper import (
+    is_paragraph_mostly_in_layout,
+)
 from babeldoc.format.pdf.document_il.utils.paragraph_helper import is_cid_paragraph
 from babeldoc.format.pdf.document_il.utils.paragraph_helper import (
     is_placeholder_only_paragraph,
@@ -309,6 +312,13 @@ class ILTranslatorLLMOnly:
 
         return True
 
+    def _is_figure_text_paragraph(self, page: Page, paragraph: PdfParagraph) -> bool:
+        """判断段落是否位于图/图片区域内(skip_figure_text 开启时不翻译,
+        保持图中的原始英文标注)。"""
+        if not getattr(self.translation_config, "skip_figure_text", False):
+            return False
+        return is_paragraph_mostly_in_layout(page, paragraph, ("figure", "image"))
+
     def _filter_paragraphs(
         self,
         page: Page,
@@ -331,6 +341,7 @@ class ILTranslatorLLMOnly:
             if self._should_translate_paragraph(
                 paragraph, translated_ids, require_body_text
             )
+            and not self._is_figure_text_paragraph(page, paragraph)
         ]
 
     def _build_font_maps(
@@ -574,6 +585,12 @@ class ILTranslatorLLMOnly:
                 continue
 
             if is_placeholder_only_paragraph(paragraph):
+                if pbar:
+                    pbar.advance(1)
+                continue
+
+            # skip_figure_text: 图/图片区域内的文字保持原文,不送翻译
+            if self._is_figure_text_paragraph(page, paragraph):
                 if pbar:
                     pbar.advance(1)
                 continue

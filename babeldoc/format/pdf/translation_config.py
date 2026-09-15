@@ -204,6 +204,7 @@ class TranslationConfig:
         only_include_translated_page: bool | None = False,
         save_auto_extracted_glossary: bool = True,
         enable_graphic_element_process: bool = True,
+        skip_figure_text: bool = False,
         merge_alternating_line_numbers: bool = True,
         skip_translation: bool = False,
         skip_form_render: bool = False,
@@ -360,6 +361,7 @@ class TranslationConfig:
         self.save_auto_extracted_glossary = save_auto_extracted_glossary
 
         self.enable_graphic_element_process = enable_graphic_element_process
+        self.skip_figure_text = skip_figure_text
         self.skip_form_render = skip_form_render
         self.skip_curve_render = skip_curve_render
         self.remove_non_formula_lines = remove_non_formula_lines
