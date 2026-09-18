@@ -601,16 +601,22 @@ class ParagraphFinder:
         """
         Determines the effective vertical boundaries (y1, y2) for a character.
 
-        It prioritizes the visual bounding box if its Intersection over Union (IoU)
-        with the PDF bounding box is high (>= 0.5), otherwise, it falls back to the
-        PDF bounding box. This helps use more accurate layout information when available.
+        When the visual (ink) box and the PDF font-metric box are consistent
+        (IoU >= 0.5), returns their intersection. The ink of glyphs with
+        descenders (g, j, p, q, y) dips below the line box and can bridge a
+        narrow inter-line gap in the threading histogram, merging two visual
+        lines into one. The intersection clips such overshoot while keeping
+        the visual box's correction of inaccurate font metrics. Falls back to
+        the visual box when the two boxes disagree.
         """
         visual_box = char.visual_bbox.box
-        return visual_box.y, visual_box.y2
         pdf_box = char.box
-        if calculate_iou_for_boxes(visual_box, pdf_box) >= 0.5:
-            return visual_box.y, visual_box.y2
-        return pdf_box.y, pdf_box.y2
+        if pdf_box is not None and calculate_iou_for_boxes(visual_box, pdf_box) >= 0.5:
+            y1 = max(visual_box.y, pdf_box.y)
+            y2 = min(visual_box.y2, pdf_box.y2)
+            if y2 > y1:
+                return y1, y2
+        return visual_box.y, visual_box.y2
 
     @staticmethod
     def _compute_collision_counts_histogram(

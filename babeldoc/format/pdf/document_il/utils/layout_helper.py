@@ -768,14 +768,32 @@ def get_character_layout(
                             else len(layout_priority)
                         ),
                         "iou": iou,
+                        "area": (layout.box.x2 - layout.box.x)
+                        * (layout.box.y2 - layout.box.y),
                     }
                 )
 
     if not matching_layouts:
         return None
 
-    # Sort by priority (ascending) and IoU value (descending)
-    matching_layouts.sort(key=lambda x: (x["priority"], -x["iou"]))
+    # Sort by priority (ascending), then by layout specificity.
+    #
+    # The IoU here is the fraction of the CHARACTER covered by the layout, so
+    # a giant same-class box (e.g. a low-confidence duplicate spanning a whole
+    # column) scores 1.0 for any character it contains and would steal
+    # characters from a tighter box that the character slightly overflows —
+    # splitting one visual line across layouts. Among same-priority layouts
+    # that cover the character well (iou >= 0.5), prefer the smallest box
+    # (the most specific one); poorly-covering candidates keep the original
+    # highest-coverage-first behavior.
+    matching_layouts.sort(
+        key=lambda x: (
+            x["priority"],
+            0 if x["iou"] >= 0.5 else 1,
+            x["area"] if x["iou"] >= 0.5 else 0.0,
+            -x["iou"],
+        )
+    )
 
     # non_hybrid_table_label = None
     # for layout in matching_layouts:
