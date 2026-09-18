@@ -936,13 +936,111 @@ class ParagraphFinder:
         bbox2_in_bbox1 = bbox2.y >= bbox1.y and bbox2.y2 <= bbox1.y2
         return bbox1_in_bbox2 or bbox2_in_bbox1
 
+    def _try_merge_contained_paragraphs(
+        self, page: Page, para1: PdfParagraph, para2: PdfParagraph
+    ) -> bool:
+        """Merge two vertically-contained, horizontally-overlapping paragraphs.
+
+        Such a pair usually comes from one visual text block that was split
+        mid-line during character grouping (e.g. a transient layout boundary
+        between characters of the same line). Since both boxes share the same
+        vertical territory, typesetting would render each paragraph's first
+        line at the same y position, producing overlapping text.
+
+        To stay conservative, the merge is only performed when both paragraphs
+        carry the same layout label and consist solely of line/character
+        compositions (no formulas or other atomic content).
+
+        The compositions of the earlier paragraph are placed before those of
+        the later one, completely intact. Characters are never re-sorted:
+        a PdfLine is not guaranteed to be a single visual line (the line
+        threading stage keeps vertically overlapping lines in one PdfLine,
+        in reading order), so any x-based re-sorting could interleave
+        stacked lines and garble the text. This makes the merge exact for
+        the dominant mid-line split case; for rarer splits in the middle of
+        a block the reading order may be approximate, but never scrambled.
+
+        Returns True if the paragraphs were merged.
+        """
+        if not para1.layout_label or para1.layout_label != para2.layout_label:
+            return False
+
+        compositions1 = para1.pdf_paragraph_composition or []
+        compositions2 = para2.pdf_paragraph_composition or []
+        if not compositions1 and not compositions2:
+            return False
+        for comp in compositions1 + compositions2:
+            if not comp.pdf_line and not comp.pdf_character:
+                # Formula or other atomic content: do not risk reordering it.
+                return False
+
+        # Reading order between the two paragraphs: compare their first
+        # non-space characters. The paragraph whose first character sits on
+        # an earlier visual row comes first; on the same row, the one
+        # further left comes first.
+        def _first_char_info(paragraph) -> tuple[float, float, float] | None:
+            for comp in paragraph.pdf_paragraph_composition or []:
+                if comp.pdf_line:
+                    chars = comp.pdf_line.pdf_character
+                else:
+                    chars = [comp.pdf_character]
+                for char in chars:
+                    if char.char_unicode and char.char_unicode.strip():
+                        box = char.visual_bbox.box
+                        return ((box.y + box.y2) / 2, box.x, box.y2 - box.y)
+            return None
+
+        info1 = _first_char_info(para1)
+        info2 = _first_char_info(para2)
+        if info1 is None or info2 is None:
+            return False
+        center1, x1, height1 = info1
+        center2, x2, height2 = info2
+        same_row = abs(center1 - center2) <= 0.5 * min(height1, height2)
+        if same_row:
+            para1_first = x1 <= x2
+        else:
+            # In PDF coordinates a larger y center means higher on the page.
+            para1_first = center1 > center2
+        ordered = (
+            compositions1 + compositions2
+            if para1_first
+            else compositions2 + compositions1
+        )
+
+        # Keep the vertically larger (containing) paragraph as the survivor so
+        # structural attributes of the container (layout id, debug id, ...)
+        # are preserved.
+        para1_contains_para2 = (
+            para1.box.y <= para2.box.y and para1.box.y2 >= para2.box.y2
+        )
+        para2_contains_para1 = (
+            para2.box.y <= para1.box.y and para2.box.y2 >= para1.box.y2
+        )
+        if para2_contains_para1 and not para1_contains_para2:
+            survivor, absorbed = para2, para1
+        else:
+            survivor, absorbed = para1, para2
+
+        survivor.pdf_paragraph_composition = ordered
+        self.update_paragraph_data(survivor, update_unicode=True)
+        page.pdf_paragraph.remove(absorbed)
+        logger.debug(
+            f"Merged vertically contained paragraph {absorbed.debug_id} into"
+            f" {survivor.debug_id} on page {page.page_number} to avoid"
+            " overlapping output."
+        )
+        return True
+
     def fix_overlapping_paragraphs(self, page: Page):
         """
         Adjusts the bounding boxes of paragraphs on a page to resolve vertical overlaps.
 
         Iteratively checks pairs of paragraphs and adjusts their vertical boundaries
         (y and y2) if they overlap, aiming to place the boundary at the midpoint
-        of the vertical overlap.
+        of the vertical overlap. When one box vertically contains the other (no
+        midpoint can separate them), the pair is merged back into a single
+        paragraph instead, see _try_merge_contained_paragraphs.
         """
         paragraphs = page.pdf_paragraph
         if not paragraphs or len(paragraphs) < 2:
@@ -954,8 +1052,11 @@ class ParagraphFinder:
         while iterations < max_iterations:
             iterations += 1
             overlap_found_in_pass = False
+            paragraphs_mutated = False
 
             for i in range(len(paragraphs)):
+                if paragraphs_mutated:
+                    break
                 for j in range(i + 1, len(paragraphs)):
                     para1 = paragraphs[i]
                     para2 = paragraphs[j]
@@ -969,6 +1070,20 @@ class ParagraphFinder:
                     # Check for overlap using the existing method
                     if self.bbox_overlap(para1.box, para2.box):
                         if self.is_bbox_contain_in_vertical(para1.box, para2.box):
+                            # One box vertically contains the other, so no
+                            # vertical midpoint can separate them. This typically
+                            # means a single visual block was split mid-line
+                            # (e.g. by a transient layout boundary between
+                            # characters of the same line). Both paragraphs
+                            # would render their first line at the same top y
+                            # and overlap in the output. Merge them back into
+                            # one paragraph in reading order instead.
+                            if self._try_merge_contained_paragraphs(page, para1, para2):
+                                overlap_found_in_pass = True
+                                # The paragraph list was mutated; restart the
+                                # pair scan from scratch.
+                                paragraphs_mutated = True
+                                break
                             continue
                         # Calculate vertical overlap details
                         overlap_y_start = max(para1.box.y, para2.box.y)
