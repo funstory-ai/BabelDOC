@@ -307,7 +307,7 @@ class OpenAITranslator(BaseTranslator):
         options = {}
         if self.send_temperature:
             options.update(self.options)
-        if self.enable_json_mode_if_requested and rate_limit_params.get(
+        if self.enable_json_mode_if_requested and rate_limit_params and rate_limit_params.get(
             "request_json_mode", False
         ):
             options["response_format"] = {"type": "json_object"}
