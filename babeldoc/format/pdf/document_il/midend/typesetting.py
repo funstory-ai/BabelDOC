@@ -1297,6 +1297,120 @@ class Typesetting:
             total_width += unit.width
         return total_width * scale
 
+    @staticmethod
+    def _build_toc_layout_plan(
+        typesetting_units: list[TypesettingUnit],
+        page_number_token: str,
+    ) -> dict | None:
+        """为目录条目段落规划尾部页码的右对齐布局。
+
+        在翻译后的排版单元序列末尾定位页码单元（页码可能被模型转写，
+        如罗马数字 iii 被转成 3），并把页码之前的空格/点引导符标记为
+        可吸收的空隙。
+
+        Returns:
+            ``{"number": set[int], "gap": set[int]}``；无法在末尾找到
+            与原始页码一致的单元时返回 None（此时回退为普通排版）。
+        """
+        leader_chars = (".", "．", "…", "·", "‧", "⋅")
+
+        i = len(typesetting_units) - 1
+        gap_indices: set[int] = set()
+        while i >= 0 and typesetting_units[i].is_space:
+            gap_indices.add(i)
+            i -= 1
+
+        number_rev: list[int] = []
+        if page_number_token.isdigit():
+            while i >= 0:
+                ch = typesetting_units[i].try_get_unicode()
+                if ch is not None and ch.isdigit():
+                    number_rev.append(i)
+                    i -= 1
+                else:
+                    break
+            full_digits = "".join(
+                typesetting_units[k].try_get_unicode()
+                for k in reversed(number_rev)
+            )
+            if full_digits == page_number_token:
+                matched = True
+            elif len(full_digits) > len(page_number_token) and full_digits.endswith(
+                page_number_token
+            ):
+                # 尾部数字串以页码结尾（如标题年份与页码被模型连成 26136）：
+                # 仅把页码后缀纳入钉入范围，前缀保留在标题中
+                matched = True
+                number_rev = number_rev[: len(page_number_token)]
+            else:
+                matched = False
+        else:
+            while i >= 0:
+                ch = typesetting_units[i].try_get_unicode()
+                if ch is not None and len(ch) == 1 and ch.lower() in "ivxlcdm":
+                    number_rev.append(i)
+                    i -= 1
+                else:
+                    break
+            joined = "".join(
+                typesetting_units[k].try_get_unicode() for k in reversed(number_rev)
+            ).lower()
+            # 允许模型把罗马页码转写为阿拉伯数字（如 iii -> 3）
+            matched = joined == page_number_token.lower() or joined.isdigit()
+
+        if not matched or not number_rev:
+            return None
+
+        number_indices = set(number_rev)
+
+        # 页码之前的空格与点引导符在重排版时被吸收（点线会按原样式重绘）
+        while i >= 0:
+            ch = typesetting_units[i].try_get_unicode()
+            if ch is not None and (ch.isspace() or ch in leader_chars):
+                gap_indices.add(i)
+                i -= 1
+            else:
+                break
+
+        # 页码与空隙之外必须还有标题单元，避免把整行都当成“可拉伸区域”
+        if all(
+            k in number_indices or k in gap_indices
+            for k in range(len(typesetting_units))
+        ):
+            return None
+
+        return {"number": number_indices, "gap": gap_indices}
+
+    def _place_toc_dot_leaders(
+        self,
+        start_x: float,
+        end_x: float,
+        y: float,
+        scale: float,
+        sample_unit: TypesettingUnit,
+    ) -> list[TypesettingUnit]:
+        """在目录标题与页码之间绘制点引导符。"""
+        if sample_unit.unicode is None or end_x <= start_x:
+            return []
+        dot_font = self.font_mapper.map(sample_unit.original_font, ".")
+        dot_template = TypesettingUnit(
+            unicode=".",
+            font=dot_font,
+            original_font=sample_unit.original_font,
+            font_size=sample_unit.font_size,
+            style=sample_unit.style,
+            xobj_id=sample_unit.xobj_id,
+        )
+        dot_width = dot_template.width * scale
+        if dot_width <= 0:
+            return []
+        dots = []
+        x = start_x
+        while x + dot_width <= end_x:
+            dots.append(dot_template.relocate(x, y, scale))
+            x += dot_width
+        return dots
+
     def _layout_typesetting_units(
         self,
         typesetting_units: list[TypesettingUnit],
@@ -1360,8 +1474,133 @@ class Typesetting:
         line_ys = [current_y]
         if paragraph.first_line_indent:
             current_x += space_width * 4
+
+        # 目录条目：规划尾部页码右对齐（页码钉在原始页码列位置，
+        # 中间空隙被吸收；原点线引导的条目会重新填充引导点）
+        toc_plan: dict | None = None
+        if getattr(paragraph, "toc_page_number", None):
+            toc_plan = self._build_toc_layout_plan(
+                typesetting_units,
+                paragraph.toc_page_number,
+            )
+            # 模型偶尔会漏译尾部页码（如长标题后 136 丢失）。
+            # 页码来自原 PDF 的几何识别，可在排版时补回，保证右对齐布局完整。
+            if toc_plan is None:
+                template_unit = next(
+                    (
+                        u
+                        for u in reversed(typesetting_units)
+                        if u.unicode is not None and u.style is not None
+                    ),
+                    None,
+                )
+                if template_unit is not None:
+                    appended = []
+                    for ch in paragraph.toc_page_number:
+                        appended.append(
+                            TypesettingUnit(
+                                unicode=ch,
+                                font=self.font_mapper.map(
+                                    template_unit.original_font, ch
+                                ),
+                                original_font=template_unit.original_font,
+                                font_size=template_unit.font_size,
+                                style=template_unit.style,
+                                xobj_id=template_unit.xobj_id,
+                            )
+                        )
+                    if appended:
+                        # 直接以追加单元作为页码构造布局计划，避免重新扫描时
+                        # 与标题尾部的数字（如年份“26”）连成 26136 之类的
+                        # 错误 token；页码前原有的空格/点引导符仍予以吸收。
+                        base_len = len(typesetting_units)
+                        typesetting_units = [*typesetting_units, *appended]
+                        number_indices = set(
+                            range(base_len, base_len + len(appended))
+                        )
+                        gap_indices: set[int] = set()
+                        gi = base_len - 1
+                        while gi >= 0:
+                            ch = typesetting_units[gi].try_get_unicode()
+                            if ch is not None and (
+                                ch.isspace() or ch in (".", "．", "…", "·", "‧", "⋅")
+                            ):
+                                gap_indices.add(gi)
+                                gi -= 1
+                            else:
+                                break
+                        toc_plan = {
+                            "number": number_indices,
+                            "gap": gap_indices,
+                        }
+        toc_can_pin = toc_plan is not None
+        toc_pinned = False
+
         # 遍历所有排版单元
         for i, unit in enumerate(typesetting_units):
+            # 目录页码/空隙单元由钉入逻辑统一处理
+            if toc_plan is not None and i in toc_plan["gap"]:
+                continue
+
+            if toc_plan is not None and i in toc_plan["number"]:
+                if toc_pinned:
+                    # 已随钉入块放置
+                    continue
+                if toc_can_pin:
+                    number_indexes = sorted(toc_plan["number"])
+                    number_total_width = sum(
+                        typesetting_units[k].width * scale for k in number_indexes
+                    )
+                    target_x2 = min(
+                        paragraph.toc_page_number_x2 or box.x2,
+                        box.x2,
+                    )
+                    pin_x0 = target_x2 - number_total_width
+                    if pin_x0 >= current_x + space_width * 0.5:
+                        # 原目录使用点引导符时，在标题与页码间重绘点线
+                        if paragraph.toc_dot_leader:
+                            sample_unit = next(
+                                (
+                                    typesetting_units[k]
+                                    for k in range(i - 1, -1, -1)
+                                    if typesetting_units[k].unicode is not None
+                                ),
+                                unit if unit.unicode is not None else None,
+                            )
+                            if sample_unit is not None:
+                                margin = space_width
+                                dots = self._place_toc_dot_leaders(
+                                    current_x + margin,
+                                    pin_x0 - margin,
+                                    current_y,
+                                    scale,
+                                    sample_unit,
+                                )
+                                typeset_units.extend(dots)
+
+                        # 将页码整体钉到右侧目标位置
+                        number_x = pin_x0
+                        for k in number_indexes:
+                            number_unit = typesetting_units[k]
+                            relocated_number = number_unit.relocate(
+                                number_x,
+                                current_y,
+                                scale,
+                            )
+                            typeset_units.append(relocated_number)
+                            current_line_heights.append(
+                                number_unit.height * scale,
+                            )
+                            number_x = relocated_number.box.x2
+                        current_x = number_x
+                        last_unit = typeset_units[-1]
+                        toc_pinned = True
+                        line_height = max(current_line_heights, default=0.0)
+                        continue
+                    # 标题过长、右侧放不下页码：回退为普通顺序排版
+                    toc_can_pin = False
+                # 回退路径：页码单元按正常流程放置
+
             # 计算当前单元在当前缩放下的尺寸
             unit_width = unit.width * scale
             unit_height = unit.height * scale
@@ -1419,6 +1658,8 @@ class Typesetting:
                 current_x = box.x
                 if not current_line_heights:
                     return [], False
+                # 标题已经换行，页码不再钉在首行右侧，回退为顺序排版
+                toc_can_pin = False
                 max_height = max(current_line_heights)
                 mode_height = statistics.mode(current_line_heights)
 

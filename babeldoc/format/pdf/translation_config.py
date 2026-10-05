@@ -205,6 +205,7 @@ class TranslationConfig:
         save_auto_extracted_glossary: bool = True,
         enable_graphic_element_process: bool = True,
         merge_alternating_line_numbers: bool = True,
+        split_toc_lines: bool = True,
         skip_translation: bool = False,
         skip_form_render: bool = False,
         skip_curve_render: bool = False,
@@ -272,6 +273,7 @@ class TranslationConfig:
         self.use_alternating_pages_dual = use_alternating_pages_dual
         self.ocr_workaround = ocr_workaround
         self.merge_alternating_line_numbers = merge_alternating_line_numbers
+        self.split_toc_lines = split_toc_lines
 
         if self.ocr_workaround:
             self.skip_scanned_detection = True

@@ -35,6 +35,7 @@ PDF scientific paper translation and bilingual comparison library.
 - **Self-deployment**: [PDFMathTranslate-next](https://github.com/PDFMathTranslate-next/PDFMathTranslate-next) support for BabelDOC, available for self-deployment + WebUI with more translation services.
 - Provides a simple [command line interface](#getting-started).
 - Provides a [Python API](#python-api).
+- Provides [standalone offline packages](#offline-deployment) for air-gapped intranets (Windows x64 / Linux x86_64, Python included).
 - Mainly designed to be embedded into other programs, but can also be used directly for simple translation tasks.
 
 > [!TIP]
@@ -112,6 +113,65 @@ uv run babeldoc --files example.pdf --files example2.pdf --openai --openai-model
 
 > [!TIP]
 > The absolute path is recommended.
+
+### Offline Deployment
+
+For air-gapped intranets where neither Python nor PyPI access is available, BabelDOC ships a build script that produces **standalone, fully-offline packages**: a portable CPython interpreter, BabelDOC with all dependencies, and the offline assets (layout models, fonts, cmaps) bundled in a single zip per platform. Nothing needs to be preinstalled on the target machine.
+
+#### 1. Build the packages (internet-connected build machine)
+
+Requirements on the build machine:
+
+- Windows x64 with PowerShell 5.1+
+- [uv](https://github.com/astral-sh/uv) (used to fetch the portable Python)
+- [Docker](https://www.docker.com/) (only required when building the Linux package)
+
+From the repository root:
+
+```powershell
+# build both packages (default: Tsinghua pip mirror; pass -PipIndex "" for PyPI)
+powershell -ExecutionPolicy Bypass -File scripts\build_offline_packages.ps1
+
+# build the Windows package only (no Docker needed)
+powershell -ExecutionPolicy Bypass -File scripts\build_offline_packages.ps1 -Platform win64
+```
+
+Useful flags: `-Force` (rebuild instead of reusing staged artifacts), `-PythonVersion 3.13.3`, `-SkipVerify`, `-SkipZip`. The finished zips are written to `_offline_babeldoc/`:
+
+- `babeldoc-<version>-win64-offline.zip`
+- `babeldoc-<version>-linux-x64-offline.zip`
+
+Transfer the corresponding zip to the target machine with any offline file-transfer method.
+
+#### 2. Windows target (x64)
+
+1. Unzip the package to any directory (the folder is relocatable afterwards).
+2. Double-click **`1-init.bat`** once per Windows user: it restores the bundled assets into `%USERPROFILE%\.cache\babeldoc` and verifies the installation.
+3. Translate from the command line:
+
+```bat
+babeldoc.bat --files example.pdf --lang-in en --lang-out zh ^
+  --openai --openai-base-url http://YOUR_LLM_HOST/v1 ^
+  --openai-api-key YOUR_KEY --openai-model YOUR_MODEL -o output
+```
+
+#### 3. Linux target (x86_64)
+
+```bash
+unzip babeldoc-<version>-linux-x64-offline.zip -d babeldoc && cd babeldoc
+sh install.sh          # extracts portable Python, restores assets, verifies (once per user)
+
+./babeldoc.sh --files example.pdf --lang-in en --lang-out zh \
+  --openai --openai-base-url http://YOUR_LLM_HOST/v1 \
+  --openai-api-key YOUR_KEY --openai-model YOUR_MODEL -o output
+```
+
+> [!NOTE]
+>
+> 1. No Python or system packages need to be installed on the target machine; all native libraries are bundled. Linux requires **glibc >= 2.34** (e.g. Ubuntu 22.04+, Debian 12+, RHEL/Rocky 9, Kylin V10 SP1 with glibc 2.34). CentOS 7 (glibc 2.17) is not supported.
+> 2. Initialization (`1-init.bat` / `install.sh`) restores about 220 MB of assets to `~/.cache/babeldoc/` and must be run **once per OS user**. The packages themselves never need internet access afterwards.
+> 3. Translation still requires an OpenAI-compatible LLM endpoint reachable from the intranet (e.g. a self-hosted vLLM/Ollama service). For local models such as Ollama, any string can be used as the API key.
+> 4. The portable Python can also be called directly as a Python API runtime, e.g. `python\python.exe -c "import babeldoc"` on Windows or `./python/bin/python3` on Linux.
 
 ## Advanced Options
 

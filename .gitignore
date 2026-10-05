@@ -31,6 +31,8 @@ yadt.toml*
 examples/
 /make_gif.py
 /dist
+# Standalone offline package staging and outputs (scripts/build_offline_packages.ps1)
+/_offline_babeldoc
 .cache
 .cursor/rules/_*.mdc
 /.cursor

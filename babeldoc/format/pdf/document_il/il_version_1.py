@@ -1239,6 +1239,27 @@ class PdfParagraph:
             "type": "Attribute",
         },
     )
+    toc_page_number: str | None = field(
+        default=None,
+        metadata={
+            "name": "tocPageNumber",
+            "type": "Attribute",
+        },
+    )
+    toc_page_number_x2: float | None = field(
+        default=None,
+        metadata={
+            "name": "tocPageNumberX2",
+            "type": "Attribute",
+        },
+    )
+    toc_dot_leader: bool | None = field(
+        default=None,
+        metadata={
+            "name": "tocDotLeader",
+            "type": "Attribute",
+        },
+    )
 
 
 @dataclass(slots=True)
