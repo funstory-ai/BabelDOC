@@ -13,7 +13,7 @@ from pathlib import Path
 
 import freetype
 import pymupdf
-from bitstring import BitStream
+from bitstring import BitArray
 
 from babeldoc.assets.embedding_assets_metadata import FONT_NAMES
 from babeldoc.format.pdf.document_il import PdfOriginalPath
@@ -57,10 +57,10 @@ class RenderUnit(ABC):
     @abstractmethod
     def render(
         self,
-        draw_op: BitStream,
+        draw_op: BitArray,
         context: "RenderContext",
     ) -> None:
-        """Render this unit to the draw_op BitStream."""
+        """Render this unit to the draw_op BitArray."""
         pass
 
     def get_sort_key(self) -> tuple[int, int]:
@@ -80,7 +80,7 @@ class CharacterRenderUnit(RenderUnit):
         super().__init__(render_order, sub_render_order, char.xobj_id)
         self.char = char
 
-    def render(self, draw_op: BitStream, context: "RenderContext") -> None:
+    def render(self, draw_op: BitArray, context: "RenderContext") -> None:
         char = self.char
         if char.char_unicode == "\n":
             return
@@ -169,7 +169,7 @@ class FormRenderUnit(RenderUnit):
         super().__init__(render_order, sub_render_order, form.xobj_id)
         self.form = form
 
-    def render(self, draw_op: BitStream, context: "RenderContext") -> None:
+    def render(self, draw_op: BitArray, context: "RenderContext") -> None:
         form = self.form
         draw_op.append(b"q ")
 
@@ -251,7 +251,7 @@ class RectangleRenderUnit(RenderUnit):
         self.rectangle = rectangle
         self.line_width = line_width
 
-    def render(self, draw_op: BitStream, context: "RenderContext") -> None:
+    def render(self, draw_op: BitArray, context: "RenderContext") -> None:
         rectangle = self.rectangle
         x1 = rectangle.box.x
         y1 = rectangle.box.y
@@ -292,7 +292,7 @@ class CurveRenderUnit(RenderUnit):
         super().__init__(render_order, sub_render_order, curve.xobj_id)
         self.curve = curve
 
-    def render(self, draw_op: BitStream, context: "RenderContext") -> None:
+    def render(self, draw_op: BitArray, context: "RenderContext") -> None:
         curve = self.curve
         draw_op.append(b"q n ")
 
@@ -326,7 +326,7 @@ class CurveRenderUnit(RenderUnit):
             return
 
         draw_op.append(b" ")
-        path_op = BitStream(b" ")
+        path_op = BitArray(b" ")
 
         # Use original path if available, otherwise fall back to transformed path
         path_to_use = (
@@ -358,7 +358,7 @@ class CurveRenderUnit(RenderUnit):
 
         draw_op.append(b" n Q\n")
 
-    def _append_original_primitive_path(self, path_op: BitStream) -> bool:
+    def _append_original_primitive_path(self, path_op: BitArray) -> bool:
         primitive = self.curve.pdf_original_path_primitive
         if primitive is None or primitive.op != "re" or len(primitive.args) != 4:
             return False
@@ -628,7 +628,7 @@ class PDFCreater:
 
     def render_graphic_state(
         self,
-        draw_op: BitStream,
+        draw_op: BitArray,
         graphic_state: il_version_1.GraphicState,
     ):
         if graphic_state is None:
@@ -926,8 +926,8 @@ class PDFCreater:
         self,
         render_units: list[RenderUnit],
         context: RenderContext,
-        page_op: BitStream,
-        xobj_draw_ops: dict[str, BitStream],
+        page_op: BitArray,
+        xobj_draw_ops: dict[str, BitArray],
     ) -> None:
         """Render sorted render units to appropriate draw streams."""
         # Sort render units by (render_order, sub_render_order)
@@ -975,14 +975,14 @@ class PDFCreater:
 
     def _render_rectangle(
         self,
-        draw_op: BitStream,
+        draw_op: BitArray,
         rectangle: il_version_1.PdfRectangle,
         line_width: float = 0.4,
     ):
         """Draw a rectangle in PDF for visualization purposes.
 
         Args:
-            draw_op: BitStream to append PDF drawing operations
+            draw_op: BitArray to append PDF drawing operations
             rectangle: Rectangle object containing position information
             line_width: Line width
         """
@@ -1146,7 +1146,7 @@ class PDFCreater:
             page_encoding_length_map = {
                 f.font_id: f.encoding_length for f in page.pdf_font
             }
-            page_op = BitStream()
+            page_op = BitArray()
             # q {ops_base}Q 1 0 0 1 {x0} {y0} cm {ops_new}
             page_op.append(b"q ")
             if base_op is not None:
@@ -1666,12 +1666,12 @@ class PDFCreater:
             }
             all_encoding_length_map.update(xobj_encoding_length_map[xobj.xobj_id])
             xobj_encoding_length_map[xobj.xobj_id].update(page_encoding_length_map)
-            xobj_op = BitStream()
+            xobj_op = BitArray()
             base_op = xobj.base_operations.value
             base_op = zstd_decompress(base_op)
             xobj_op.append(base_op.encode())
             xobj_draw_ops[xobj.xobj_id] = xobj_op
-        page_op = BitStream()
+        page_op = BitArray()
         # q {ops_base}Q 1 0 0 1 {x0} {y0} cm {ops_new}
         # page_op.append(b"q ")
         # base_op = page.base_operations.value
