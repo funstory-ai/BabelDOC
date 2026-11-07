@@ -80,7 +80,7 @@ jobs:
           if [ -n "$RELEASE_TAG" ]; then
             version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           else
-            version="$(uv run --no-sync bumpver update --patch --tag=final --dry 2>&1 | sed -n 's/^New Version: //p')"
+            version="$(uv run --no-sync bumpver update --patch --tag=final --dry 2>&1 | sed -n 's/.*New Version: //p')"
             test -n "$version"
             version="${version}.dev$(date +%s)"
           fi
