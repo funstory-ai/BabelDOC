@@ -247,7 +247,9 @@ class TranslationConfig:
         self.capture_stages = capture_stages
         self.capture_dir = Path(capture_dir) if capture_dir is not None else None
         self.deterministic_output = deterministic_output
-        self._capture_document_name = Path(input_file).stem
+        self._capture_document_name = (
+            Path(input_file).stem if input_file is not None else None
+        )
         self._capture_part_index = 0
         logger.warning(
             "Watermark output mode is deprecated: it no longer adds a watermark; "
