@@ -17,6 +17,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Select Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
       - name: Cache BabelDOC assets
         uses: actions/cache@v5
         with:
@@ -47,9 +53,15 @@ jobs:
 
       - name: Lightweight no-secret PDF E2E
         run: |
+          smoke_output="$(mktemp -d)"
           uv run babeldoc \
             --openai \
             --openai-api-key ci-dummy-key \
             --files examples/ci/test.pdf \
+            --output "$smoke_output" \
             --only-parse-generate-pdf \
             --skip-scanned-detection
+          test -n "$(find "$smoke_output" -maxdepth 1 -type f -name '*.pdf' -print -quit)" || {
+            echo "PDF smoke completed without producing an output PDF."
+            exit 1
+          }

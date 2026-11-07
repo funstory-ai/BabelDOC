@@ -1,0 +1,12 @@
+[package]
+name = "babeldoc-writer-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+lopdf = { version = "=0.45.0", default-features = false, features = ["rayon"] }
+ruzstd = "=0.9.0"
+serde_json = { workspace = true }
+log = { workspace = true }
+babeldoc-ir-core = { path = "../ir_core" }
+babeldoc-font-core = { path = "../font_core" }

@@ -1,0 +1,5 @@
+# Runtime mapping tables and parser probes are source assets.
+!assets/font_runtime/**/*.json
+!assets/font_runtime/*.json
+!examples/
+!examples/*.rs

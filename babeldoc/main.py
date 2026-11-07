@@ -55,6 +55,22 @@ def create_parser():
         help="Use debug logging level.",
     )
     parser.add_argument(
+        "--capture-stages",
+        action="store_true",
+        help="Write identity-preserving IR artifacts at stage boundaries.",
+    )
+    parser.add_argument(
+        "--capture-dir",
+        type=Path,
+        default=None,
+        help="Root directory for stage artifacts.",
+    )
+    parser.add_argument(
+        "--deterministic-output",
+        action="store_true",
+        help="Use fixed producer timestamp and PDF trailer IDs.",
+    )
+    parser.add_argument(
         "--warmup",
         action="store_true",
         help="Only download and verify required assets then exit.",
@@ -216,7 +232,7 @@ def create_parser():
         type=str,
         choices=["watermarked", "no_watermark", "both"],
         default="watermarked",
-        help="Control watermark output mode: 'watermarked' (default) adds watermark to translated PDF, 'no_watermark' doesn't add watermark, 'both' outputs both versions.",
+        help="[DEPRECATED] Watermarks are no longer added; this option still controls output file names and count.",
     )
     translation_group.add_argument(
         "--max-pages-per-part",
@@ -226,7 +242,7 @@ def create_parser():
     translation_group.add_argument(
         "--no-watermark",
         action="store_true",
-        help="[DEPRECATED] Use --watermark-output-mode=no_watermark instead. Do not add watermark to the translated PDF.",
+        help="[DEPRECATED] Watermarks are no longer added; this option still affects output file names and count.",
     )
     translation_group.add_argument(
         "--report-interval",
@@ -719,6 +735,9 @@ async def main():
             working_dir=working_dir,
             add_formula_placehold_hint=args.add_formula_placehold_hint,
             disable_same_text_fallback=args.disable_same_text_fallback,
+            capture_stages=args.capture_stages,
+            capture_dir=args.capture_dir,
+            deterministic_output=args.deterministic_output,
             glossaries=loaded_glossaries,
             pool_max_workers=args.pool_max_workers,
             auto_extract_glossary=args.auto_extract_glossary,

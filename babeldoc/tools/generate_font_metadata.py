@@ -29,9 +29,7 @@ def get_font_metadata(
     *,
     working_dir: str | Path | None = None,
 ) -> PdfFont:
-    from babeldoc.format.pdf.new_parser.native_parse import (
-        parse_with_new_parser_to_legacy_ir,
-    )
+    from babeldoc.rust_parser_service import parse_pdf_to_il
 
     font_path = Path(font_path)
     temp_root = Path(working_dir) if working_dir is not None else None
@@ -47,10 +45,7 @@ def get_font_metadata(
         parse_working_dir = temp_dir_path / "parse_working"
 
         _write_font_probe_pdf(font_path, probe_pdf_path)
-        il = parse_with_new_parser_to_legacy_ir(
-            probe_pdf_path,
-            working_dir=parse_working_dir,
-        )
+        il = parse_pdf_to_il(probe_pdf_path, working_dir=parse_working_dir)
 
     il_page = il.page[0]
     if not il_page.pdf_font:

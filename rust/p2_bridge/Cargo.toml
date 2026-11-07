@@ -1,0 +1,32 @@
+[package]
+name = "babeldoc-p2-bridge"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[features]
+default = []
+memory-profile = ["babeldoc-parser-core/memory-profile"]
+stage-capture = ["dep:zstd"]
+
+[lib]
+name = "_rust_il"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+babeldoc-il-types = { path = "../il_types" }
+babeldoc-p2-stages = { path = "../p2_stages" }
+pyo3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+
+babeldoc-ir-core = { path = "../ir_core" }
+
+tokio = { version = "=1.53.2", default-features = false, features = ["rt-multi-thread", "sync"] }
+async-trait = "=0.1.92"
+zstd = { version = "=0.13.3", optional = true }
+
+babeldoc-writer-core = { path = "../writer_core" }
+
+babeldoc-parser-core = { path = "../parser_core" }

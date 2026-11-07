@@ -59,11 +59,9 @@ def parse_pdf(
     working_dir: str | Path | None = None,
     debug: bool = False,
 ) -> il_version_1.Document:
-    from babeldoc.format.pdf.new_parser.native_parse import (
-        parse_with_new_parser_to_legacy_ir,
-    )
+    from babeldoc.rust_parser_service import parse_pdf_to_il
 
-    return parse_with_new_parser_to_legacy_ir(
+    return parse_pdf_to_il(
         pdf_path,
         pages=page_ranges,
         working_dir=working_dir,

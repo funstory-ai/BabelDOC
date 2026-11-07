@@ -17,7 +17,6 @@ classifiers = [
 ]
 keywords = ["PDF"]
 dependencies = [
-    "bitstring>=4.3.0",
     "configargparse>=1.7",
     "httpx[socks]>=0.27.0",
     "huggingface-hub>=0.27.0",
@@ -32,7 +31,7 @@ dependencies = [
     #    "pdfminer-six==20250416",
     "peewee>=3.17.8",
     "psutil>=7.0.0",
-    "pymupdf>=1.26.7",
+    "pymupdf>=1.26.7,<2",
     "rich>=13.9.4",
     "toml>=0.10.2",
     "tqdm>=4.67.1",
@@ -67,8 +66,8 @@ Issues = "https://github.com/funstory-ai/BabelDOC/issues"
 babeldoc = "babeldoc.main:cli"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin==1.15.0"]
+build-backend = "maturin"
 
 [tool.flake8]
 ignore = ["E203", "E261", "E501", "W503", "E741", "E501"]
@@ -189,3 +188,24 @@ reportGeneralTypeIssues = false
 reportUnknownVariableType = false
 reportMissingParameterType = false
 reportUnknownParameterType = false
+
+
+[tool.maturin]
+manifest-path = "rust/p2_bridge/Cargo.toml"
+python-source = "."
+module-name = "babeldoc._rust_il"
+include = [
+    { path = "rust/vendor/lopdf/**/*", format = "sdist" },
+    { path = "scripts/generate_il_rust.py", format = "sdist" },
+    { path = "scripts/il_rust_m.py", format = "sdist" },
+    { path = "scripts/il_rust_m_declarations.py", format = "sdist" },
+]
+
+[tool.uv]
+cache-keys = [
+    { file = "rust/**/*.rs" },
+    { file = "rust/**/Cargo.toml" },
+    { file = "rust/**/Cargo.lock" },
+    { file = "scripts/generate_il_rust.py" },
+    { file = "babeldoc/format/pdf/document_il/il_version_1.py" },
+]

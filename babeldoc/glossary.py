@@ -4,6 +4,7 @@ import itertools
 import logging
 import re
 import time
+from collections import Counter
 from pathlib import Path
 
 import chardet
@@ -38,23 +39,51 @@ TERM_NORM_PATTERN = re.compile(r"\s+", regex.UNICODE)
 
 
 class Glossary:
-    def __init__(self, name: str, entries: list[GlossaryEntry]):
+    def __init__(
+        self,
+        name: str,
+        entries: list[GlossaryEntry],
+        *,
+        _prefer_frequent_source_spelling: bool = False,
+    ):
         self.name = name
 
-        # Deduplicate entries based on normalized source
-        unique_entries = []
-        seen_normalized_sources = set()
-        for entry in entries:
-            normalized_source = self.normalize_source(entry.source)
-            if normalized_source not in seen_normalized_sources:
-                unique_entries.append(entry)
-                seen_normalized_sources.add(normalized_source)
+        if _prefer_frequent_source_spelling:
+            source_groups: dict[str, list[GlossaryEntry]] = {}
+            for entry in entries:
+                normalized_source = self.normalize_source(entry.source)
+                source_groups.setdefault(normalized_source, []).append(entry)
+            unique_entries = []
+            for group in source_groups.values():
+                counts = Counter(entry.source for entry in group)
+                highest_count = max(counts.values())
+                selected_source = min(
+                    source for source, count in counts.items() if count == highest_count
+                )
+                unique_entries.append(
+                    next(entry for entry in group if entry.source == selected_source)
+                )
+        else:
+            seen_sources: set[str] = set()
+            unique_entries = []
+            for entry in entries:
+                normalized_source = self.normalize_source(entry.source)
+                if normalized_source not in seen_sources:
+                    seen_sources.add(normalized_source)
+                    unique_entries.append(entry)
         self.entries = unique_entries
 
         self.normalized_lookup: dict[str, tuple[str, str]] = {}
         self.id_lookup: list[tuple[str, str]] = []
         self.hs_dbs: list[hyperscan.Database] | None = None
         self._build_regex_and_lookup()
+
+    @classmethod
+    def from_auto_extracted_entries(
+        cls, name: str, entries: list[GlossaryEntry]
+    ) -> "Glossary":
+        """Build an auto-extracted glossary using source-spelling votes."""
+        return cls(name, entries, _prefer_frequent_source_spelling=True)
 
     @staticmethod
     def normalize_source(source_term: str) -> str:

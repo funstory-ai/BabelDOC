@@ -1,0 +1,10 @@
+target
+Cargo.lock
+test*.pdf
+*.pdf
+.idea
+*log.txt
+specs
+.DS_Store
+/notes
+ops.txt

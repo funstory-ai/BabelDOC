@@ -148,9 +148,9 @@ uv run babeldoc --files example.pdf --files example2.pdf --openai --openai-model
 - `--disable-rich-text-translate`: Disable rich text translation (may help improve compatibility with some PDFs)
 - `--enhance-compatibility`: Enable all compatibility enhancement options (equivalent to --skip-clean --dual-translate-first --disable-rich-text-translate)
 - `--use-alternating-pages-dual`: Use alternating pages mode for dual PDF. When enabled, original and translated pages are arranged in alternate order. When disabled (default), original and translated pages are shown side by side on the same page.
-- `--watermark-output-mode`: Control watermark output mode: 'watermarked' (default) adds watermark to translated PDF, 'no_watermark' doesn't add watermark, 'both' outputs both versions.
+- `--watermark-output-mode`: [DEPRECATED] Watermarks are no longer added; this option still controls output file names and count.
 - `--max-pages-per-part`: Maximum number of pages per part for split translation. If not set, no splitting will be performed.
-- `--no-watermark`: [DEPRECATED] Use --watermark-output-mode=no_watermark instead.
+- `--no-watermark`: [DEPRECATED] Watermarks are no longer added; this option still affects output file names and count.
 - `--translate-table-text`: Translate table text (experimental, default: False)
 - `--formular-font-pattern`: Font pattern to identify formula text (default: None)
 - `--formular-char-pattern`: Character pattern to identify formula text (default: None)
@@ -277,10 +277,10 @@ skip-clean = false
 dual-translate-first = false
 disable-rich-text-translate = false
 use-alternating-pages-dual = false
-watermark-output-mode = "watermarked"  # Choices: "watermarked", "no_watermark", "both"
+watermark-output-mode = "watermarked"  # DEPRECATED: No watermark is added; this still controls output file names and count.
 max-pages-per-part = 50  # Automatically split the document for translation and merge it back.
 only_include_translated_page = false # Only include translated pages in the output PDF. Effective only when `pages` is used.
-# no-watermark = false  # DEPRECATED: Use watermark-output-mode instead
+# no-watermark = false  # DEPRECATED: No watermark is added; this still affects output file names and count.
 skip-scanned-detection = false  # Skip scanned document detection for faster processing
 auto_extract_glossary = true # Set to false to disable automatic term extraction
 formular_font_pattern = "" # Font pattern for formula text

@@ -1,0 +1,16 @@
+[package]
+name = "babeldoc-font-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+sha3 = "=0.12.0"
+skrifa = "=0.45.1"
+
+[lib]
+name = "babeldoc_font_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "font-core-probe"
+path = "src/bin/font_core_probe.rs"

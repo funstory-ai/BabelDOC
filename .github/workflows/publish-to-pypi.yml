@@ -20,27 +20,37 @@ jobs:
     steps:
       - run: echo "Running repository check"
 
-  build:
-    name: Build distribution 📦
+  prepare-release:
+    name: Resolve version and release notes
     needs: check-repository
     if: needs.check-repository.outputs.is_main_repo == 'true'
     runs-on: ubuntu-latest
     outputs:
-      is_release: ${{ steps.check-version.outputs.tag }}
+      release_tag: ${{ steps.check-version.outputs.tag }}
+      package_version: ${{ steps.package-version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: true
           fetch-depth: 2
           token: ${{ secrets.GITHUB_TOKEN }}
-          
+
+      - name: Select Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
       - name: Setup uv with Python 3.12
         uses: astral-sh/setup-uv@85856786d1ce8acfbcc2f13a5f3fbd6b938f9f41 # v7.1.2
         with:
           python-version: "3.12"
           enable-cache: true
-          cache-dependency-glob: "uv.lock"
+          cache-dependency-glob: "pyproject.toml"
           activate-environment: true
+
+      - name: Install release tooling
+        run: uv sync --no-install-project
 
       - name: Check if there is a parent commit
         id: check-parent-commit
@@ -57,74 +67,82 @@ jobs:
 
       - name: Check manual release notes
         if: steps.check-version.outputs.tag
+        env:
+          RELEASE_TAG: ${{ steps.check-version.outputs.tag }}
+        run: test -f "docs/release-notes/${RELEASE_TAG}.md"
+
+      - name: Resolve package version
+        id: package-version
+        env:
+          RELEASE_TAG: ${{ steps.check-version.outputs.tag }}
+        shell: bash
         run: |
-          test -f "docs/release-notes/${{ steps.check-version.outputs.tag }}.md"
+          if [ -n "$RELEASE_TAG" ]; then
+            version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          else
+            version="$(uv run --no-sync bumpver update --patch --tag=final --dry 2>&1 | sed -n 's/^New Version: //p')"
+            test -n "$version"
+            version="${version}.dev$(date +%s)"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Install Dependencies
-        run: |
-          uv sync
-
-      - name: Bump version for developmental release
-        if: "! steps.check-version.outputs.tag"
-        run: |
-          version=$(uv run bumpver update --patch --tag=final --dry 2>&1 | grep "New Version" | awk '{print $NF}') &&
-          uv run bumpver update --set-version $version.dev$(date +%s)
-
-      - name: Build package
-        run: "uv build"
-
-      - name: Store the distribution packages
-        uses: actions/upload-artifact@v7.0.0
-        with:
-          name: python-package-distributions
-          path: dist/
-
-  publish-to-pypi:
-    name: Publish Python 🐍 distribution 📦 to PyPI
-    if: needs.build.outputs.is_release != ''
+  build:
+    name: Build wheels and sdist
     needs:
       - check-repository
+      - prepare-release
+    if: needs.check-repository.outputs.is_main_repo == 'true'
+    uses: ./.github/workflows/build-wheel-matrix.yml
+    with:
+      platform_group: all
+      package_version: ${{ needs.prepare-release.outputs.package_version }}
+
+  publish-to-pypi:
+    name: Publish Python distribution to PyPI
+    if: needs.prepare-release.outputs.release_tag != ''
+    needs:
+      - check-repository
+      - prepare-release
       - build
     runs-on: ubuntu-latest
     environment:
       name: pypi
       url: https://pypi.org/p/BabelDOC
-
     permissions:
       id-token: write
-
     steps:
-      - name: Download all the dists
+      - name: Download all distributions
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
-          name: python-package-distributions
+          pattern: distribution-*
+          merge-multiple: true
           path: dist/
 
-      - name: Publish distribution 📦 to PyPI
+      - name: Publish distribution to PyPI
         uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
 
   publish-to-testpypi:
-    name: Publish Python 🐍 distribution 📦 to TestPyPI
-    if: needs.build.outputs.is_release == ''
+    name: Publish Python distribution to TestPyPI
+    if: needs.prepare-release.outputs.release_tag == ''
     needs:
       - check-repository
+      - prepare-release
       - build
     runs-on: ubuntu-latest
     environment:
       name: testpypi
       url: https://test.pypi.org/p/BabelDOC
-
     permissions:
       id-token: write
-
     steps:
-      - name: Download all the dists
+      - name: Download all distributions
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
-          name: python-package-distributions
+          pattern: distribution-*
+          merge-multiple: true
           path: dist/
 
-      - name: Publish distribution 📦 to TestPyPI
+      - name: Publish distribution to TestPyPI
         uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
         with:
           repository-url: https://test.pypi.org/legacy/
@@ -133,11 +151,12 @@ jobs:
     name: Post Release Tasks
     needs:
       - check-repository
+      - prepare-release
       - build
       - publish-to-pypi
       - publish-to-testpypi
     if: |
-      always() && needs.check-repository.outputs.is_main_repo == 'true' && 
+      always() && needs.check-repository.outputs.is_main_repo == 'true' &&
       (needs.publish-to-pypi.result == 'success' || needs.publish-to-testpypi.result == 'success')
     runs-on: ubuntu-latest
     permissions:
@@ -153,16 +172,16 @@ jobs:
       - name: Publish the release notes
         uses: release-drafter/release-drafter@b1476f6e6eb133afa41ed8589daba6dc69b4d3f5 # v6.1.0
         with:
-          publish: ${{ needs.build.outputs.is_release != '' }}
-          tag: ${{ needs.build.outputs.is_release }}
+          publish: ${{ needs.prepare-release.outputs.release_tag != '' }}
+          tag: ${{ needs.prepare-release.outputs.release_tag }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Prepend manual release notes
-        if: needs.build.outputs.is_release != ''
+        if: needs.prepare-release.outputs.release_tag != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.build.outputs.is_release }}
+          TAG: ${{ needs.prepare-release.outputs.release_tag }}
         run: |
           set -euo pipefail
           notes_path="docs/release-notes/${TAG}.md"

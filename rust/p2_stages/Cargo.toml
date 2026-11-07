@@ -1,0 +1,17 @@
+[package]
+name = "babeldoc-p2-stages"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+babeldoc-il-types = { path = "../il_types" }
+babeldoc-font-core = { path = "../font_core" }
+regex = "=1.13.1"
+aho-corasick = "=1.1.5"
+tiktoken-rs = "=0.12.1"
+serde_json = { workspace = true }
+fastrand = "=2.5.0"
+log = { workspace = true }
+babeldoc-ir-core = { path = "../ir_core" }
+rtree_compat = { path = "../rtree_compat" }
+rayon = "=1.12.0"

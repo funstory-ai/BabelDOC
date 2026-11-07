@@ -1,0 +1,14 @@
+[package]
+name = "babeldoc-ir-core"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+memory-profile = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+babeldoc-il-types = { path = "../il_types" }
+ruzstd = "=0.9.0"
+sha2 = "=0.11.0"

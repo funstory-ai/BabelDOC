@@ -661,6 +661,24 @@ class PdfCharacter:
             "type": "Attribute",
         },
     )
+    visual_roundtrip_text_scale_x: float | None = field(
+        default=None,
+        metadata={
+            "type": "Attribute",
+        },
+    )
+    visual_roundtrip_text_scale_y: float | None = field(
+        default=None,
+        metadata={
+            "type": "Attribute",
+        },
+    )
+    visual_roundtrip_text_render_mode: int | None = field(
+        default=None,
+        metadata={
+            "type": "Attribute",
+        },
+    )
     pdf_character_id: int | None = field(
         default=None,
         metadata={

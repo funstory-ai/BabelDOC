@@ -17,6 +17,7 @@ memray*
 *.pdf
 *.docx
 *.json
+!scripts/experiment_gateway/tests/fixtures/*.json
 **/*.pyc
 .venv
 .idea
@@ -50,3 +51,12 @@ temp.jpg
 .codex
 .repomap.tags.cache.v1/
 
+
+# Rust build output
+rust/**/target/
+/rust/target/
+
+# Non-secret operator input example is part of the experiment contract.
+!scripts/experiments/settings.example.json
+
+!scripts/rust_parser_diff/reference_sources.json

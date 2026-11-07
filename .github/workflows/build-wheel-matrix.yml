@@ -1,0 +1,415 @@
+name: Build wheel matrix
+
+on:
+  workflow_call:
+    inputs:
+      platform_group:
+        description: all, linux, desktop, or windows (Windows only)
+        required: false
+        type: string
+        default: all
+      package_version:
+        description: Optional version override for a dev distribution
+        required: false
+        type: string
+        default: ""
+      linux_x86_64_runner:
+        required: false
+        type: string
+        default: ubuntu-24.04
+      linux_arm64_runner:
+        required: false
+        type: string
+        default: ubuntu-24.04-arm
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x86_64:
+    if: ${{ inputs.platform_group == 'all' || inputs.platform_group == 'linux' }}
+    runs-on: ${{ inputs.linux_x86_64_runner }}
+    container:
+      image: quay.io/pypa/manylinux_2_28_x86_64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Select Rust toolchain
+        shell: bash
+        run: |
+          : "${HOME:?HOME must be set by the runner}"
+          export CARGO_HOME="${HOME}/.cargo"
+          export RUSTUP_HOME="${HOME}/.rustup"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
+          "${CARGO_HOME}/bin/rustup" toolchain install 1.95.0 --profile minimal
+          "${CARGO_HOME}/bin/rustup" default 1.95.0
+          echo "CARGO_HOME=${CARGO_HOME}" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=${RUSTUP_HOME}" >> "$GITHUB_ENV"
+          echo "${CARGO_HOME}/bin" >> "$GITHUB_PATH"
+
+      - name: Setup uv with Python 3.10
+        uses: astral-sh/setup-uv@85856786d1ce8acfbcc2f13a5f3fbd6b938f9f41 # v7.1.2
+        with:
+          python-version: "3.10"
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+          activate-environment: true
+
+      - name: Set package version
+        if: ${{ inputs.package_version != '' }}
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("pyproject.toml")
+          text = path.read_text()
+          text, replacements = re.subn(
+              r'(?m)^version = "[^"]+"$',
+              f'version = "{os.environ["PACKAGE_VERSION"]}"',
+              text,
+              count=1,
+          )
+          if replacements != 1:
+              raise SystemExit("could not update project version")
+          path.write_text(text)
+          PY
+
+      - name: Build manylinux wheel
+        run: uv run --no-project --with maturin==1.15.0 maturin build --release --locked --manylinux manylinux_2_28 --out dist
+
+      - name: Require abi3 wheel
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          wheels = list(Path("dist").glob("*.whl"))
+          if len(wheels) != 1 or wheels[0].name.split("-")[-2] != "abi3":
+              raise SystemExit(f"expected one abi3 wheel, found: {[p.name for p in wheels]}")
+          PY
+
+      - name: Fresh install and smoke on Python 3.10 and 3.13
+        shell: bash
+        run: |
+          run_pdf_smoke() {
+            local python_version="$1"
+            local output_dir
+            output_dir="$(mktemp -d)"
+            echo "Running PDF smoke on Python ${python_version}."
+            uv run --no-sync babeldoc \
+              --openai \
+              --openai-api-key ci-dummy-key \
+              --files examples/ci/test.pdf \
+              --output "$output_dir" \
+              --only-parse-generate-pdf \
+              --skip-scanned-detection
+            test -n "$(find "$output_dir" -maxdepth 1 -type f -name '*.pdf' -print -quit)" || {
+              echo "PDF smoke completed without producing an output PDF."
+              return 1
+            }
+          }
+          export UV_PYTHON=3.10
+          uv venv --clear --python 3.10
+          uv pip install dist/*.whl
+          uv run --no-sync python -I -c "import babeldoc._rust_il"
+          uv run --no-sync python -I -c "import babeldoc, pymupdf; print('babeldoc', babeldoc.__version__, 'pymupdf', pymupdf.VersionBind)"
+          run_pdf_smoke 3.10
+          export UV_PYTHON=3.13
+          uv venv --clear --python 3.13
+          uv pip install dist/*.whl
+          uv run --no-sync python -I -c "import babeldoc._rust_il"
+          uv run --no-sync python -I -c "import babeldoc, pymupdf; print('babeldoc', babeldoc.__version__, 'pymupdf', pymupdf.VersionBind)"
+          run_pdf_smoke 3.13
+
+      - uses: actions/upload-artifact@v7.0.0
+        with:
+          name: distribution-wheel-linux-x86_64
+          path: dist/*.whl
+          if-no-files-found: error
+
+  linux-arm64:
+    if: ${{ inputs.platform_group == 'all' || inputs.platform_group == 'linux' }}
+    runs-on: ${{ inputs.linux_arm64_runner }}
+    container:
+      image: quay.io/pypa/manylinux_2_28_aarch64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Select Rust toolchain
+        shell: bash
+        run: |
+          : "${HOME:?HOME must be set by the runner}"
+          export CARGO_HOME="${HOME}/.cargo"
+          export RUSTUP_HOME="${HOME}/.rustup"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
+          "${CARGO_HOME}/bin/rustup" toolchain install 1.95.0 --profile minimal
+          "${CARGO_HOME}/bin/rustup" default 1.95.0
+          echo "CARGO_HOME=${CARGO_HOME}" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=${RUSTUP_HOME}" >> "$GITHUB_ENV"
+          echo "${CARGO_HOME}/bin" >> "$GITHUB_PATH"
+
+      - name: Setup uv with Python 3.10
+        uses: astral-sh/setup-uv@85856786d1ce8acfbcc2f13a5f3fbd6b938f9f41 # v7.1.2
+        with:
+          python-version: "3.10"
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+          activate-environment: true
+
+      - name: Set package version
+        if: ${{ inputs.package_version != '' }}
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("pyproject.toml")
+          text = path.read_text()
+          text, replacements = re.subn(
+              r'(?m)^version = "[^"]+"$',
+              f'version = "{os.environ["PACKAGE_VERSION"]}"',
+              text,
+              count=1,
+          )
+          if replacements != 1:
+              raise SystemExit("could not update project version")
+          path.write_text(text)
+          PY
+
+      - name: Build manylinux wheel
+        run: uv run --no-project --with maturin==1.15.0 maturin build --release --locked --manylinux manylinux_2_28 --out dist
+
+      - name: Require abi3 wheel
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          wheels = list(Path("dist").glob("*.whl"))
+          if len(wheels) != 1 or wheels[0].name.split("-")[-2] != "abi3":
+              raise SystemExit(f"expected one abi3 wheel, found: {[p.name for p in wheels]}")
+          PY
+
+      - name: Fresh install and smoke on Python 3.10 and 3.13
+        shell: bash
+        run: |
+          run_pdf_smoke() {
+            local python_version="$1"
+            local output_dir
+            output_dir="$(mktemp -d)"
+            echo "Running PDF smoke on Python ${python_version}."
+            uv run --no-sync babeldoc \
+              --openai \
+              --openai-api-key ci-dummy-key \
+              --files examples/ci/test.pdf \
+              --output "$output_dir" \
+              --only-parse-generate-pdf \
+              --skip-scanned-detection
+            test -n "$(find "$output_dir" -maxdepth 1 -type f -name '*.pdf' -print -quit)" || {
+              echo "PDF smoke completed without producing an output PDF."
+              return 1
+            }
+          }
+          export UV_PYTHON=3.10
+          uv venv --clear --python 3.10
+          uv pip install dist/*.whl
+          uv run --no-sync python -I -c "import babeldoc._rust_il"
+          uv run --no-sync python -I -c "import babeldoc, pymupdf; print('babeldoc', babeldoc.__version__, 'pymupdf', pymupdf.VersionBind)"
+          run_pdf_smoke 3.10
+          export UV_PYTHON=3.13
+          uv venv --clear --python 3.13
+          uv pip install dist/*.whl
+          uv run --no-sync python -I -c "import babeldoc._rust_il"
+          uv run --no-sync python -I -c "import babeldoc, pymupdf; print('babeldoc', babeldoc.__version__, 'pymupdf', pymupdf.VersionBind)"
+          run_pdf_smoke 3.13
+
+      - uses: actions/upload-artifact@v7.0.0
+        with:
+          name: distribution-wheel-linux-arm64
+          path: dist/*.whl
+          if-no-files-found: error
+
+  desktop:
+    if: ${{ inputs.platform_group == 'all' || inputs.platform_group == 'desktop' || inputs.platform_group == 'windows' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.platform_group == 'windows' && '[{"runner":"windows-latest","artifact_suffix":"windows-x86_64"}]' || '[{"runner":"windows-latest","artifact_suffix":"windows-x86_64"},{"runner":"macos-15-intel","artifact_suffix":"macos-x86_64"},{"runner":"macos-15","artifact_suffix":"macos-arm64"}]') }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Select Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: Setup uv with Python 3.10
+        uses: astral-sh/setup-uv@85856786d1ce8acfbcc2f13a5f3fbd6b938f9f41 # v7.1.2
+        with:
+          python-version: "3.10"
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+          activate-environment: true
+
+      - name: Set package version
+        if: ${{ inputs.package_version != '' }}
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("pyproject.toml")
+          text = path.read_text()
+          text, replacements = re.subn(
+              r'(?m)^version = "[^"]+"$',
+              f'version = "{os.environ["PACKAGE_VERSION"]}"',
+              text,
+              count=1,
+          )
+          if replacements != 1:
+              raise SystemExit("could not update project version")
+          path.write_text(text)
+          PY
+
+      - name: Expose zlib headers to freetype-sys (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # freetype-sys 0.23 compiles bundled libpng against zlib.h but adds a
+          # non-existent include dir; reuse the headers libz-sys builds from.
+          cargo fetch --locked --manifest-path rust/p2_bridge/Cargo.toml
+          cargo_home="$(cygpath -u "${CARGO_HOME:-$USERPROFILE/.cargo}")"
+          zlib_dir="$(ls -d "$cargo_home"/registry/src/*/libz-sys-*/src/zlib | head -n 1)"
+          test -f "$zlib_dir/zlib.h" && test -f "$zlib_dir/zconf.h"
+          echo "CFLAGS_x86_64_pc_windows_msvc=-I$(cygpath -w "$zlib_dir")" >> "$GITHUB_ENV"
+
+      - name: Build wheel
+        run: uv run --no-project --with maturin==1.15.0 maturin build --release --locked --out dist
+
+      - name: Require abi3 wheel
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          wheels = list(Path("dist").glob("*.whl"))
+          if len(wheels) != 1 or wheels[0].name.split("-")[-2] != "abi3":
+              raise SystemExit(f"expected one abi3 wheel, found: {[p.name for p in wheels]}")
+          PY
+
+      - name: Fresh install and smoke on Python 3.10 and 3.13
+        shell: bash
+        run: |
+          run_pdf_smoke() {
+            local python_version="$1"
+            local output_dir
+            output_dir="$(mktemp -d)"
+            echo "Running PDF smoke on Python ${python_version}."
+            uv run --no-sync babeldoc \
+              --openai \
+              --openai-api-key ci-dummy-key \
+              --files examples/ci/test.pdf \
+              --output "$output_dir" \
+              --only-parse-generate-pdf \
+              --skip-scanned-detection
+            test -n "$(find "$output_dir" -maxdepth 1 -type f -name '*.pdf' -print -quit)" || {
+              echo "PDF smoke completed without producing an output PDF."
+              return 1
+            }
+          }
+          export UV_PYTHON=3.10
+          uv venv --clear --python 3.10
+          uv pip install dist/*.whl
+          uv run --no-sync python -I -c "import babeldoc._rust_il"
+          uv run --no-sync python -I -c "import babeldoc, pymupdf; print('babeldoc', babeldoc.__version__, 'pymupdf', pymupdf.VersionBind)"
+          run_pdf_smoke 3.10
+          export UV_PYTHON=3.13
+          uv venv --clear --python 3.13
+          uv pip install dist/*.whl
+          uv run --no-sync python -I -c "import babeldoc._rust_il"
+          uv run --no-sync python -I -c "import babeldoc, pymupdf; print('babeldoc', babeldoc.__version__, 'pymupdf', pymupdf.VersionBind)"
+          run_pdf_smoke 3.13
+
+      - uses: actions/upload-artifact@v7.0.0
+        with:
+          name: distribution-wheel-${{ matrix.artifact_suffix }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    if: ${{ inputs.platform_group == 'all' || inputs.platform_group == 'linux' }}
+    runs-on: ${{ inputs.linux_x86_64_runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Select Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: Setup uv with Python 3.10
+        uses: astral-sh/setup-uv@85856786d1ce8acfbcc2f13a5f3fbd6b938f9f41 # v7.1.2
+        with:
+          python-version: "3.10"
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+          activate-environment: true
+
+      - name: Set package version
+        if: ${{ inputs.package_version != '' }}
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("pyproject.toml")
+          text = path.read_text()
+          text, replacements = re.subn(
+              r'(?m)^version = "[^"]+"$',
+              f'version = "{os.environ["PACKAGE_VERSION"]}"',
+              text,
+              count=1,
+          )
+          if replacements != 1:
+              raise SystemExit("could not update project version")
+          path.write_text(text)
+          PY
+
+      - name: Build source distribution
+        run: uv build --sdist --out-dir dist
+
+      - uses: actions/upload-artifact@v7.0.0
+        with:
+          name: distribution-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error

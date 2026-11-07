@@ -1,0 +1,6 @@
+format_strings = false
+reorder_imports = true
+fn_params_layout = "Compressed"
+max_width = 120
+comment_width = 120
+wrap_comments = true

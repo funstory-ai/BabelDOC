@@ -1,0 +1,23 @@
+[package]
+name = "babeldoc-parser-core"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+memory-profile = ["babeldoc-ir-core/memory-profile"]
+
+[dependencies]
+log = { workspace = true }
+babeldoc-ir-core = { path = "../ir_core" }
+babeldoc-il-types = { path = "../il_types" }
+lopdf = { version = "=0.45.0", default-features = false, features = ["rayon"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ruzstd = "=0.9.0"
+freetype-rs = { version = "=0.38.0", features = ["bundled"] }
+libz-sys = { version = "=1.1.31", features = ["static"] }
+zstd = "=0.13.3"
+tiktoken-rs = "=0.12.1"
+
+[dev-dependencies]
+babeldoc-writer-core = { path = "../writer_core" }

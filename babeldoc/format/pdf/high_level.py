@@ -1,75 +1,75 @@
 import asyncio
 import copy
 import hashlib
-import io
+import json
 import logging
-import pathlib
 import re
 import shutil
 import threading
 import time
 from asyncio import CancelledError
 from pathlib import Path
-from typing import Any
 
 import pymupdf
 from pymupdf import Document
 
 from babeldoc import asynchronize
 from babeldoc.assets.assets import warmup
-from babeldoc.babeldoc_exception.BabelDOCException import ExtractTextError
 from babeldoc.babeldoc_exception.BabelDOCException import (
     InputFileGeneratedByBabelDOCError,
 )
 from babeldoc.const import CACHE_FOLDER
 from babeldoc.const import WATERMARK_VERSION
-from babeldoc.const import close_process_pool
 from babeldoc.format.pdf.document_il import il_version_1
 from babeldoc.format.pdf.document_il.backend.pdf_creater import SAVE_PDF_STAGE_NAME
 from babeldoc.format.pdf.document_il.backend.pdf_creater import SUBSET_FONT_STAGE_NAME
 from babeldoc.format.pdf.document_il.backend.pdf_creater import PDFCreater
 from babeldoc.format.pdf.document_il.backend.pdf_creater import reproduce_cmap
-from babeldoc.format.pdf.document_il.midend.add_debug_information import (
-    AddDebugInformation,
-)
-from babeldoc.format.pdf.document_il.midend.automatic_term_extractor import (
-    AutomaticTermExtractor,
-)
-from babeldoc.format.pdf.document_il.midend.detect_scanned_file import DetectScannedFile
-from babeldoc.format.pdf.document_il.midend.il_translator import ILTranslator
-from babeldoc.format.pdf.document_il.midend.il_translator_llm_only import (
-    ILTranslatorLLMOnly,
-)
-from babeldoc.format.pdf.document_il.midend.layout_parser import LayoutParser
-from babeldoc.format.pdf.document_il.midend.paragraph_finder import ParagraphFinder
-from babeldoc.format.pdf.document_il.midend.styles_and_formulas import StylesAndFormulas
-from babeldoc.format.pdf.document_il.midend.table_parser import TableParser
-from babeldoc.format.pdf.document_il.midend.typesetting import Typesetting
 from babeldoc.format.pdf.document_il.utils.fontmap import FontMapper
-from babeldoc.format.pdf.document_il.xml_converter import XMLConverter
 from babeldoc.format.pdf.result_merger import ResultMerger
 from babeldoc.format.pdf.split_manager import SplitManager
 from babeldoc.format.pdf.translation_config import TranslateResult
 from babeldoc.format.pdf.translation_config import TranslationConfig
 from babeldoc.format.pdf.translation_config import WatermarkOutputMode
 from babeldoc.progress_monitor import ProgressMonitor
+from babeldoc.rust_callback_bridge import CallbackRun
+from babeldoc.rust_debug_service import RustDebugSerializerService
+from babeldoc.rust_layout_service import LayoutService
+from babeldoc.rust_run_context import TranslatorProbeService
+from babeldoc.rust_run_context import create_document_run_context
+from babeldoc.rust_scan_service import ScanFileService
+from babeldoc.rust_translation_service import RustTranslatorService
+from babeldoc.rust_writer_service import WriterFileService
 from babeldoc.utils import memory
 
 logger = logging.getLogger(__name__)
 
+_DETECT_SCANNED_STAGE = "DetectScannedFile"
+_LAYOUT_STAGE = "Parse Page Layout"
+_TABLE_STAGE = "Parse Table"
+_PARAGRAPH_STAGE = "Parse Paragraphs"
+_FORMULA_STAGE = "Parse Formulas and Styles"
+_TERM_STAGE = "Automatic Term Extraction"
+_TRANSLATION_STAGE = "Translate Paragraphs"
+_TYPESETTING_STAGE = "Typesetting"
+_DRAWING_STAGE = "Generate drawing instructions"
+
+_DETERMINISTIC_PDF_ID = (
+    "[<424142454c444f432d44455445524d31><424142454c444f432d44455445524d32>]"
+)
+
 TRANSLATE_STAGES = [
     ("Parse PDF and Create Intermediate Representation", 14.12),
-    (DetectScannedFile.stage_name, 2.45),  # DetectScannedFile
-    (LayoutParser.stage_name, 14.03),  # Parse Page Layout
-    (TableParser.stage_name, 1.0),  # Parse Table
-    (ParagraphFinder.stage_name, 6.26),  # Parse Paragraphs
-    (StylesAndFormulas.stage_name, 1.66),  # Parse Formulas and Styles
-    # (RemoveDescent.stage_name, 0.15),  # Remove Char Descent
-    (AutomaticTermExtractor.stage_name, 30.0),  # Extract Terms
-    (ILTranslator.stage_name, 46.96),  # Translate Paragraphs
-    (Typesetting.stage_name, 4.71),  # Typesetting
+    (_DETECT_SCANNED_STAGE, 2.45),
+    (_LAYOUT_STAGE, 14.03),
+    (_TABLE_STAGE, 1.0),
+    (_PARAGRAPH_STAGE, 6.26),
+    (_FORMULA_STAGE, 1.66),
+    (_TERM_STAGE, 30.0),
+    (_TRANSLATION_STAGE, 46.96),
+    (_TYPESETTING_STAGE, 4.71),
     (FontMapper.stage_name, 0.61),  # Add Fonts
-    (PDFCreater.stage_name, 1.96),  # Generate drawing instructions
+    (_DRAWING_STAGE, 1.96),
     (SUBSET_FONT_STAGE_NAME, 0.92),  # Subset font
     (SAVE_PDF_STAGE_NAME, 6.34),  # Save PDF
 ]
@@ -197,7 +197,10 @@ def add_metadata(
             else:
                 creator += f", {producer}"
 
-        translated_by = f"BabelDOC{WATERMARK_VERSION}_{time.time()}_Translation_generated_by_AI,please_carefully_discern"
+        producer_timestamp = (
+            0.0 if translate_config.deterministic_output else time.time()
+        )
+        translated_by = f"BabelDOC{WATERMARK_VERSION}_{producer_timestamp}_Translation_generated_by_AI,please_carefully_discern"
         if translate_config.metadata_extra_data:
             translated_by += f"_{translate_config.metadata_extra_data}"
         meta["producer"] = translated_by
@@ -211,6 +214,36 @@ def add_metadata(
         pdf.set_metadata(meta)
         safe_save(pdf, temp_path)
         shutil.move(temp_path, path)
+
+
+def finalize_deterministic_pdf_outputs(translate_result: TranslateResult) -> None:
+    processed = []
+    for attr in (
+        "mono_pdf_path",
+        "dual_pdf_path",
+        "no_watermark_mono_pdf_path",
+        "no_watermark_dual_pdf_path",
+    ):
+        output_path = getattr(translate_result, attr)
+        if not output_path:
+            continue
+        output_path = Path(output_path)
+        if output_path in processed:
+            continue
+        processed.append(output_path)
+
+        temp_path = output_path.with_name(
+            f"{output_path.stem}.deterministic.tmp{output_path.suffix}"
+        )
+        if temp_path.exists():
+            temp_path.unlink()
+        pdf = pymupdf.open(output_path)
+        try:
+            pdf.xref_set_key(-1, "ID", _DETERMINISTIC_PDF_ID)
+            pdf.save(temp_path, no_new_id=True)
+        finally:
+            pdf.close()
+        shutil.move(temp_path, output_path)
 
 
 def fix_cmap(translate_result: TranslateResult, translate_config: TranslationConfig):
@@ -257,8 +290,20 @@ def translator_supports_llm(translator) -> bool:
 
 
 def translate(translation_config: TranslationConfig) -> TranslateResult:
+    _require_stage_capture_feature(translation_config)
     with ProgressMonitor(get_translation_stage(translation_config)) as pm:
         return do_translate(pm, translation_config)
+
+
+def _require_stage_capture_feature(translation_config: TranslationConfig) -> None:
+    if not translation_config.capture_stages:
+        return
+    from babeldoc import _rust_il
+
+    if not _rust_il.stage_capture_enabled():
+        raise RuntimeError(
+            "stage capture was requested, but this Rust extension was built without the `stage-capture` Cargo feature"
+        )
 
 
 def get_translation_stage(
@@ -271,26 +316,26 @@ def get_translation_stage(
     if translation_config.only_parse_generate_pdf:
         should_remove.extend(
             [
-                DetectScannedFile.stage_name,
-                LayoutParser.stage_name,
-                TableParser.stage_name,
-                ParagraphFinder.stage_name,
-                StylesAndFormulas.stage_name,
-                AutomaticTermExtractor.stage_name,
-                ILTranslator.stage_name,
-                Typesetting.stage_name,
+                _DETECT_SCANNED_STAGE,
+                _LAYOUT_STAGE,
+                _TABLE_STAGE,
+                _PARAGRAPH_STAGE,
+                _FORMULA_STAGE,
+                _TERM_STAGE,
+                _TRANSLATION_STAGE,
+                _TYPESETTING_STAGE,
             ]
         )
     else:
         # Original logic for selective removal
         if not translation_config.table_model:
-            should_remove.append(TableParser.stage_name)
+            should_remove.append(_TABLE_STAGE)
         if translation_config.skip_scanned_detection:
-            should_remove.append(DetectScannedFile.stage_name)
+            should_remove.append(_DETECT_SCANNED_STAGE)
         if not translation_config.auto_extract_glossary:
-            should_remove.append(AutomaticTermExtractor.stage_name)
+            should_remove.append(_TERM_STAGE)
         if translation_config.skip_translation:
-            should_remove.append(ILTranslator.stage_name)
+            should_remove.append(_TRANSLATION_STAGE)
 
     result = [x for x in result if x[0] not in should_remove]
     return result
@@ -344,6 +389,7 @@ async def async_translate(translation_config: TranslationConfig):
         CancelledError: If the translation is cancelled
         Exception: Any other errors during translation
     """
+    _require_stage_capture_feature(translation_config)
     loop = asyncio.get_running_loop()
     callback = asynchronize.AsyncCallback()
 
@@ -431,7 +477,7 @@ class MemoryMonitor:
             except Exception as e:
                 logger.warning(f"Error monitoring memory: {e}")
 
-            time.sleep(self.interval)
+            self.stop_event.wait(self.interval)
 
     def get_peek_memory_psutil(self):
         """Get peak memory usage using psutil (for backwards compatibility)."""
@@ -527,6 +573,10 @@ def update_page_bbox(doc, page, box, key):
 def do_translate(
     pm: ProgressMonitor, translation_config: TranslationConfig
 ) -> TranslateResult:
+    _require_stage_capture_feature(translation_config)
+    run_context = None
+    rust_module = None
+    rust_logging_started = False
     try:
         translation_config.progress_monitor = pm
         original_pdf_path = translation_config.input_file
@@ -540,12 +590,18 @@ def do_translate(
             raise e
         except Exception as e:
             logger.warning(f"Error in check metadata, continue: {e}")
+        from babeldoc import _rust_il
+
+        rust_module = _rust_il
+        rust_module.acquire_logging_run()
+        rust_logging_started = True
+        run_context = create_document_run_context(translation_config)
         start_time = time.time()
         peak_memory_usage = 0
         with MemoryMonitor() as memory_monitor:
             # Check if split translation is enabled
             if not translation_config.split_strategy:
-                result = _do_translate_single(pm, translation_config)
+                result = _do_translate_single(pm, translation_config, run_context)
             else:
                 # Initialize split manager and determine split points
                 split_manager = SplitManager(translation_config)
@@ -555,13 +611,15 @@ def do_translate(
                     logger.warning(
                         "No split points determined, falling back to single translation"
                     )
-                    result = _do_translate_single(pm, translation_config)
+                    result = _do_translate_single(pm, translation_config, run_context)
                 else:
                     logger.info(f"Split points determined: {len(split_points)} parts")
 
                     if len(split_points) == 1:
                         logger.info("Only one part, use single translation")
-                        result = _do_translate_single(pm, translation_config)
+                        result = _do_translate_single(
+                            pm, translation_config, run_context
+                        )
                     else:
                         pm.total_parts = len(split_points)
 
@@ -575,6 +633,7 @@ def do_translate(
                             try:
                                 # Create a copy of config for this part
                                 part_config = copy.copy(translation_config)
+                                part_config._capture_part_index = i
                                 part_config.skip_clean = True
                                 should_translate_pages = []
                                 for page in range(
@@ -659,6 +718,7 @@ def do_translate(
                                 result = _do_translate_single(
                                     part_monitor,
                                     part_config,
+                                    run_context,
                                 )
                                 results[i] = result
 
@@ -716,6 +776,8 @@ def do_translate(
             logger.error(
                 f"Failed to migrate TOC from {translation_config.input_file}: {e}"
             )
+        if translation_config.deterministic_output:
+            finalize_deterministic_pdf_outputs(result)
         pm.translate_done(result)
         return result
 
@@ -729,8 +791,19 @@ def do_translate(
         raise
     finally:
         logger.debug("do_translate finally")
-        pm.on_finish()
-        translation_config.cleanup_temp_files()
+        try:
+            if run_context is not None:
+                run_context.close()
+        finally:
+            try:
+                if rust_logging_started:
+                    try:
+                        rust_module.flush_logging_run()
+                    finally:
+                        rust_module.stop_logging_run()
+            finally:
+                pm.on_finish()
+                translation_config.cleanup_temp_files()
 
 
 def migrate_toc(
@@ -833,11 +906,126 @@ def check_cid_char(il: il_version_1.Document):
     return cid_count > len(chars) * 0.8
 
 
+def _rust_stage_configs(config, run_context):
+    style_fields = {
+        name: getattr(config, name)
+        for name in (
+            "skip_formula_offset_calculation",
+            "ocr_workaround",
+            "remove_non_formula_lines",
+            "figure_table_protection_threshold",
+            "non_formula_line_iou_threshold",
+            "formular_font_pattern",
+            "formular_char_pattern",
+        )
+    }
+    paragraph = {
+        "debug": config.debug,
+        "ocr_workaround": config.ocr_workaround,
+        "merge_alternating_line_numbers": config.merge_alternating_line_numbers,
+        "split_short_lines": config.split_short_lines,
+        "short_line_split_factor": config.short_line_split_factor,
+        "formular_font_pattern": config.formular_font_pattern,
+    }
+    styles = {
+        "config_fields": style_fields,
+    }
+    typesetting = {
+        "config_fields": {"lang_out": config.lang_out},
+        "font_source_styles": run_context.font_source_styles,
+        "progress_monitor_present": True,
+    }
+    return {"paragraph": paragraph, "styles": styles, "typesetting": typesetting}
+
+
+def _rust_writer_inputs(config, run_context, temp_pdf_path):
+    from babeldoc.assets.embedding_assets_metadata import EMBEDDING_FONT_METADATA
+
+    basename = Path(config.input_file).stem
+    debug_suffix = ".debug" if config.debug else ""
+    if config.watermark_output_mode != WatermarkOutputMode.Watermarked:
+        debug_suffix += ".no_watermark"
+    mono_path = (
+        None
+        if config.no_mono
+        else str(
+            config.get_output_file_path(
+                f"{basename}{debug_suffix}.{config.lang_out}.mono.pdf"
+            )
+        )
+    )
+    dual_path = (
+        None
+        if config.no_dual
+        else str(
+            config.get_output_file_path(
+                f"{basename}{debug_suffix}.{config.lang_out}.dual.pdf"
+            )
+        )
+    )
+    writer_config = {
+        "source": str(temp_pdf_path),
+        "translated": str(config.get_working_file_path("translated.pdf")),
+        "debug_original": str(config.get_working_file_path("debug_original.pdf")),
+        "mono": mono_path,
+        "dual": dual_path,
+        "debug": config.debug,
+        "ocr_workaround": config.ocr_workaround,
+        "skip_clean": config.skip_clean,
+        "skip_form_render": config.skip_form_render,
+        "skip_curve_render": config.skip_curve_render,
+        "only_include_translated_page": config.only_include_translated_page,
+        "use_alternating_pages_dual": config.use_alternating_pages_dual,
+        "dual_translate_first": config.dual_translate_first,
+    }
+    font_ids = list(
+        dict.fromkeys(
+            font_id
+            for group in ("normal", "script", "fallback", "base")
+            for font_id in run_context.font_family[group]
+        )
+    )
+    writer_assets = [
+        {
+            "id": font_id,
+            "metadata": {
+                key: EMBEDDING_FONT_METADATA[font_id][key]
+                for key in ("font_name", "ascent", "descent", "encoding_length")
+            },
+        }
+        for font_id in font_ids
+    ]
+    writer_assets.append(
+        {
+            "id": "base",
+            "metadata": {
+                key: EMBEDDING_FONT_METADATA[run_context.font_family["base"][0]][key]
+                for key in ("font_name", "ascent", "descent", "encoding_length")
+            },
+        }
+    )
+    paths = {
+        "scan": str(config.get_working_file_path("detect_scanned_file.json")),
+        "layout": str(config.get_working_file_path("layout_generator.json")),
+        "table": str(config.get_working_file_path("table_parser.json")),
+        "paragraph": str(config.get_working_file_path("paragraph_finder.json")),
+        "styles": str(config.get_working_file_path("styles_and_formulas.json")),
+        "translation": str(config.get_working_file_path("il_translated.json")),
+        "debug_information": str(
+            config.get_working_file_path("add_debug_information.json")
+        ),
+        "typesetting": str(config.get_working_file_path("typsetting.json")),
+    }
+    return writer_config, writer_assets, paths
+
+
 def _do_translate_single(
     pm: ProgressMonitor,
     translation_config: TranslationConfig,
+    run_context,
 ) -> TranslateResult:
-    """Original translation logic for a single document or part"""
+    """Parse and retain native IR through the Rust production entry."""
+    _require_stage_capture_feature(translation_config)
     translation_config.progress_monitor = pm
 
     if translation_config.shared_context_cross_split_part.auto_enabled_ocr_workaround:
@@ -881,280 +1069,189 @@ def _do_translate_single(
 
     doc_pdf2zh = save_pdf_with_same_path_fallback(doc_pdf2zh, temp_pdf_path)
 
-    # if not translation_config.skip_scanned_detection and DetectScannedFile(
-    #     translation_config
-    # ).fast_check(doc_pdf2zh):
-    #     if translation_config.auto_enable_ocr_workaround:
-    #         logger.warning(
-    #             "Fast scanned check hit, Turning on OCR workaround.",
-    #         )
-    #         translation_config.shared_context_cross_split_part.auto_enabled_ocr_workaround = True
-    #         translation_config.ocr_workaround = True
-    #         translation_config.skip_scanned_detection = True
-    #     else:
-    #         logger.warning(
-    #             "Fast scanned check hit, Please check the input PDF file.",
-    #         )
-    #         raise ScannedPDFError("Scanned PDF detected.")
+    try:
+        from babeldoc import _rust_il
 
-    xml_converter = XMLConverter()
-    logger.debug(f"start parse il from {temp_pdf_path}")
-    from babeldoc.format.pdf.new_parser.native_parse import (
-        parse_prepared_pdf_with_new_parser_to_legacy_ir,
-    )
+        cancel_event = pm.cancel_event or threading.Event()
+        with CallbackRun({}, cancel_event, _rust_il, record_requests=False) as run:
+            pm.raise_if_cancelled()
+            parser_config = {
+                "disable_parser_resource_limits": translation_config.disable_parser_resource_limits,
+                "pages": [
+                    number
+                    for number in range(doc_pdf2zh.page_count)
+                    if translation_config.should_translate_page(number + 1)
+                ],
+                "enable_graphic_element_process": translation_config.enable_graphic_element_process,
+                "ocr_workaround": translation_config.ocr_workaround,
+                "visual_roundtrip_mode": getattr(
+                    translation_config,
+                    "visual_roundtrip_mode",
+                    False,
+                ),
+            }
+            capture_path = translation_config.get_stage_capture_file_path("parser")
+            debug_path = (
+                translation_config.get_working_file_path("create_il.debug.json")
+                if translation_config.debug
+                else None
+            )
+            logger.debug(f"start parse il from {temp_pdf_path}")
+            rust_document = _rust_il.parse_prepared_pdf_product(
+                str(temp_pdf_path),
+                json.dumps(parser_config),
+                run_context.font_mapper,
+                run_context.shared_context,
+                run.flag,
+                pm,
+                only_include_translated_page=translation_config.only_include_translated_page,
+                capture_path=None if capture_path is None else str(capture_path),
+                debug_path=None if debug_path is None else str(debug_path),
+            )
+            pm.raise_if_cancelled()
+            logger.debug(f"finish parse il from {temp_pdf_path}")
+            if rust_document is None:
+                return None
+            stage_config = (
+                {}
+                if translation_config.only_parse_generate_pdf
+                else _rust_stage_configs(translation_config, run_context)
+            )
+            writer_config, writer_assets, debug_paths = _rust_writer_inputs(
+                translation_config, run_context, temp_pdf_path
+            )
+            capture_paths = {}
+            if translation_config.capture_stages:
+                for stage in (
+                    "scan",
+                    "layout",
+                    "paragraph",
+                    "styles",
+                    "translation",
+                    "typesetting",
+                ):
+                    path = translation_config.get_stage_capture_file_path(stage)
+                    if path is not None:
+                        capture_paths[stage] = str(path)
+            services = {}
+            try:
+                translator = translation_config.translator
+                term_translator = translation_config.get_term_extraction_translator()
+                translation_service = RustTranslatorService(
+                    translator, translation_config, run_context.shared_context
+                )
+                run_context.dispatcher_a.service = translation_service
+                run_context.dispatcher_b.service = translation_service
+                term_service = RustTranslatorService(
+                    term_translator, translation_config, run_context.shared_context
+                )
+                services["scan"] = (ScanFileService(), 1)
+                services["layout"] = (
+                    LayoutService(
+                        translation_config, doc_pdf2zh, run_context.font_mapper
+                    ),
+                    1,
+                )
+                services["translation"] = (
+                    translation_service,
+                    translation_config.pool_max_workers,
+                )
+                services["term"] = (
+                    term_service,
+                    translation_config.term_pool_max_workers,
+                )
+                services["writer"] = (
+                    WriterFileService(translation_config, mediabox_data, temp_pdf_path),
+                    1,
+                )
+                services["debug"] = (RustDebugSerializerService(), 1)
+                services["probe_terms"] = (
+                    TranslatorProbeService(term_translator, translator_supports_llm),
+                    1,
+                )
+                services["probe_translate"] = (
+                    TranslatorProbeService(translator, translator_supports_llm),
+                    1,
+                )
+                run.add_services(services, record_requests=False)
+                run_context.dispatcher_a.cancel_flag = run.flag
+                run_context.dispatcher_b.cancel_flag = run.flag
+                services["layout"][0].flag = run.flag
+                writer_service = services["writer"][0]
+                basename = Path(translation_config.input_file).stem
+                debug_suffix = ".debug" if translation_config.debug else ""
+                if (
+                    translation_config.watermark_output_mode
+                    != WatermarkOutputMode.Watermarked
+                ):
+                    debug_suffix += ".no_watermark"
+                if translation_config.save_auto_extracted_glossary:
+                    writer_service.glossary_path = translation_config.get_output_file_path(
+                        f"{basename}{debug_suffix}.{translation_config.lang_out}.glossary.csv"
+                    )
+                mono_path, dual_path, glossary_path = rust_document.run_part(
+                    run_context.native,
+                    translation_config,
+                    run.executors,
+                    json.dumps(stage_config),
+                    json.dumps(debug_paths),
+                    json.dumps(writer_config),
+                    json.dumps(writer_assets),
+                    run.flag,
+                    pm,
+                    translation_config.capture_stages,
+                    json.dumps(capture_paths),
+                )
+            finally:
+                # The Rust stages normally request these cleanups themselves. Keep
+                # service teardown idempotent for failures before those callbacks.
+                for service_name, method in (
+                    ("scan", "close"),
+                    ("layout", "close"),
+                    ("layout", "close_process_pool"),
+                    ("writer", "close"),
+                ):
+                    cleanup = getattr(
+                        services.get(service_name, (None, 0))[0], method, None
+                    )
+                    if cleanup is not None:
+                        cleanup()
 
-    docs = parse_prepared_pdf_with_new_parser_to_legacy_ir(
-        temp_pdf_path,
-        config=translation_config,
-        doc_pdf=doc_pdf2zh,
-    )
-    logger.debug(f"finish parse il from {temp_pdf_path}")
-    logger.debug(f"finish create il from {temp_pdf_path}")
-    if translation_config.only_include_translated_page and not docs.page:
-        return None
-
-    if translation_config.debug:
-        xml_converter.write_json(
-            docs,
-            translation_config.get_working_file_path("create_il.debug.json"),
+        result = TranslateResult(
+            mono_pdf_path=None if mono_path is None else Path(mono_path),
+            dual_pdf_path=None if dual_path is None else Path(dual_path),
+            auto_extracted_glossary_path=(
+                None if glossary_path is None else Path(glossary_path)
+            ),
         )
-
-    if check_cid_char(docs):
-        raise ExtractTextError("The document contains too many CID chars.")
-
-    # Skip all translation processing if only_parse_generate_pdf is enabled
-    if translation_config.only_parse_generate_pdf:
-        logger.debug("only_parse_generate_pdf enabled, skipping translation processing")
-        # Skip directly to PDF generation
-        pdf_creater = PDFCreater(temp_pdf_path, docs, translation_config, mediabox_data)
-        result = pdf_creater.write(translation_config)
+        # only-parse keeps 0.6.4's single no-watermark group even in Both mode.
+        if not translation_config.only_parse_generate_pdf:
+            _copy_both_mode_outputs(result, translation_config)
         result.original_pdf_path = translation_config.input_file
         return result
 
-    # Rest of the original translation logic...
-    # [Previous implementation of do_translate continues here]
-
-    # 检测是否为扫描文件
-    if translation_config.skip_scanned_detection:
-        logger.debug("skipping scanned file detection")
-    else:
-        logger.debug("start detect scanned file")
-        DetectScannedFile(translation_config).process(
-            docs, temp_pdf_path, mediabox_data
-        )
-        logger.debug("finish detect scanned file")
-        if translation_config.debug:
-            xml_converter.write_json(
-                docs,
-                translation_config.get_working_file_path("detect_scanned_file.json"),
-            )
-
-    # Generate layouts for all pages
-    logger.debug("start generating layouts")
-    docs = LayoutParser(translation_config).process(docs, doc_pdf2zh)
-    logger.debug("finish generating layouts")
-    close_process_pool()
-    if translation_config.debug:
-        xml_converter.write_json(
-            docs,
-            translation_config.get_working_file_path("layout_generator.json"),
-        )
-
-    if translation_config.table_model:
-        docs = TableParser(translation_config).process(docs, doc_pdf2zh)
-        logger.debug("finish table parser")
-        if translation_config.debug:
-            xml_converter.write_json(
-                docs,
-                translation_config.get_working_file_path("table_parser.json"),
-            )
-    ParagraphFinder(translation_config).process(docs)
-    logger.debug(f"finish paragraph finder from {temp_pdf_path}")
-    if translation_config.debug:
-        xml_converter.write_json(
-            docs,
-            translation_config.get_working_file_path("paragraph_finder.json"),
-        )
-    StylesAndFormulas(translation_config).process(docs)
-    logger.debug(f"finish styles and formulas from {temp_pdf_path}")
-    if translation_config.debug:
-        xml_converter.write_json(
-            docs,
-            translation_config.get_working_file_path("styles_and_formulas.json"),
-        )
-
-    translate_engine = translation_config.translator
-    term_extraction_engine = translation_config.get_term_extraction_translator()
-
-    support_llm_translate = translator_supports_llm(translate_engine)
-    support_llm_term_extraction = translator_supports_llm(term_extraction_engine)
-
-    if support_llm_term_extraction and translation_config.auto_extract_glossary:
-        AutomaticTermExtractor(term_extraction_engine, translation_config).procress(
-            docs
-        )
-
-    if not translation_config.skip_translation:
-        if support_llm_translate:
-            il_translator = ILTranslatorLLMOnly(translate_engine, translation_config)
-        else:
-            il_translator = ILTranslator(translate_engine, translation_config)
-
-        il_translator.translate(docs)
-        del il_translator
-        logger.debug(f"finish ILTranslator from {temp_pdf_path}")
-    else:
-        logger.info("skip ILTranslator")
-
-    if translation_config.debug:
-        xml_converter.write_json(
-            docs,
-            translation_config.get_working_file_path("il_translated.json"),
-        )
-
-    if translation_config.debug:
-        AddDebugInformation(translation_config).process(docs)
-        xml_converter.write_json(
-            docs,
-            translation_config.get_working_file_path("add_debug_information.json"),
-        )
-    mono_watermark_first_page_doc_bytes = None
-    dual_watermark_first_page_doc_bytes = None
-    try:
-        if translation_config.watermark_output_mode == WatermarkOutputMode.Both:
-            mono_watermark_first_page_doc_bytes, dual_watermark_first_page_doc_bytes = (
-                generate_first_page_with_watermark(
-                    doc_pdf2zh, translation_config, docs, mediabox_data
-                )
-            )
-    except Exception:
-        logger.warning(
-            "Failed to generate watermark for first page, using no watermark"
-        )
-        translation_config.watermark_output_mode = WatermarkOutputMode.NoWatermark
-        mono_watermark_first_page_doc_bytes = None
-        dual_watermark_first_page_doc_bytes = None
-
-    Typesetting(translation_config).typesetting_document(docs)
-    logger.debug(f"finish typsetting from {temp_pdf_path}")
-    if translation_config.debug:
-        xml_converter.write_json(
-            docs,
-            translation_config.get_working_file_path("typsetting.json"),
-        )
-
-    pdf_creater = PDFCreater(temp_pdf_path, docs, translation_config, mediabox_data)
-    result = pdf_creater.write(translation_config)
-    try:
-        if mono_watermark_first_page_doc_bytes:
-            mono_watermark_pdf = merge_watermark_doc(
-                result.mono_pdf_path,
-                mono_watermark_first_page_doc_bytes,
-                translation_config,
-            )
-            result.mono_pdf_path = mono_watermark_pdf
-    except Exception:
-        result.mono_pdf_path = result.no_watermark_mono_pdf_path
-    try:
-        if dual_watermark_first_page_doc_bytes:
-            dual_watermark_pdf = merge_watermark_doc(
-                result.dual_pdf_path,
-                dual_watermark_first_page_doc_bytes,
-                translation_config,
-            )
-            result.dual_pdf_path = dual_watermark_pdf
-    except Exception:
-        result.dual_pdf_path = result.no_watermark_dual_pdf_path
-
-    result.original_pdf_path = translation_config.input_file
-
-    return result
-
-
-def generate_first_page_with_watermark(
-    mupdf: Document,
-    translation_config: TranslationConfig,
-    doc_il: il_version_1.Document,
-    mediabox_data: dict[int, Any] | None = None,
-) -> (io.BytesIO, io.BytesIO):
-    first_page_doc = Document()
-    first_page_doc.insert_pdf(mupdf, from_page=0, to_page=0)
-
-    il_only_first_page_doc = il_version_1.Document()
-    il_only_first_page_doc.total_pages = 1
-    il_only_first_page_doc.page = [copy.deepcopy(doc_il.page[0])]
-
-    watermarked_config = copy.copy(translation_config)
-    watermarked_config.watermark_output_mode = WatermarkOutputMode.Watermarked
-    try:
-        watermarked_config.progress_monitor.disable = True
-        watermarked_temp_pdf_path = watermarked_config.get_working_file_path(
-            "watermarked_temp_input.pdf"
-        )
-        safe_save(first_page_doc, watermarked_temp_pdf_path)
-
-        Typesetting(watermarked_config).typsetting_document(il_only_first_page_doc)
-        pdf_creater = PDFCreater(
-            watermarked_temp_pdf_path.as_posix(),
-            il_only_first_page_doc,
-            watermarked_config,
-            mediabox_data,
-        )
-        result = pdf_creater.write(watermarked_config)
-        mono_pdf_bytes = None
-        dual_pdf_bytes = None
-        if result.mono_pdf_path:
-            mono_pdf_bytes = io.BytesIO()
-            with Path(result.mono_pdf_path).open("rb") as f:
-                mono_pdf_bytes.write(f.read())
-            result.mono_pdf_path.unlink()
-            mono_pdf_bytes.seek(0)
-
-        if result.dual_pdf_path:
-            dual_pdf_bytes = io.BytesIO()
-            with Path(result.dual_pdf_path).open("rb") as f:
-                dual_pdf_bytes.write(f.read())
-            result.dual_pdf_path.unlink()
-            dual_pdf_bytes.seek(0)
-
-        return mono_pdf_bytes, dual_pdf_bytes
     finally:
-        watermarked_config.progress_monitor.disable = False
+        if not doc_pdf2zh.is_closed:
+            doc_pdf2zh.close()
 
 
-def merge_watermark_doc(
-    no_watermark_pdf_path: pathlib.PosixPath,
-    watermark_first_page_pdf_bytes: io.BytesIO,
-    translation_config: TranslationConfig,
-) -> pathlib.PosixPath:
-    if not no_watermark_pdf_path.exists():
-        raise FileNotFoundError(
-            f"no_watermark_pdf_path not found: {no_watermark_pdf_path}"
-        )
-    if not watermark_first_page_pdf_bytes:
-        raise FileNotFoundError(
-            f"watermark_first_page_pdf_bytes not found: {watermark_first_page_pdf_bytes}"
-        )
+def _copy_both_mode_outputs(
+    result: TranslateResult, translation_config: TranslationConfig
+) -> None:
+    if translation_config.watermark_output_mode != WatermarkOutputMode.Both:
+        return
 
-    no_watermark_pdf = Document(no_watermark_pdf_path.as_posix())
-    no_watermark_pdf.delete_page(0)
-
-    watermark_first_page_pdf = Document("pdf", watermark_first_page_pdf_bytes)
-    no_watermark_pdf.insert_pdf(
-        watermark_first_page_pdf, from_page=0, to_page=0, start_at=0
-    )
-
-    new_save_path = no_watermark_pdf_path.with_name(
-        no_watermark_pdf_path.name.replace(".no_watermark", "")
-    )
-
-    PDFCreater.save_pdf_with_timeout(
-        no_watermark_pdf,
-        new_save_path.as_posix(),
-        translation_config=translation_config,
-        clean=not translation_config.skip_clean,
-    )
-    return new_save_path
+    for no_watermark_attr, output_attr in (
+        ("no_watermark_mono_pdf_path", "mono_pdf_path"),
+        ("no_watermark_dual_pdf_path", "dual_pdf_path"),
+    ):
+        no_watermark_path = getattr(result, no_watermark_attr)
+        if no_watermark_path and no_watermark_path.exists():
+            output_path = no_watermark_path.with_name(
+                no_watermark_path.name.replace(".no_watermark", "")
+            )
+            shutil.copyfile(no_watermark_path, output_path)
+            setattr(result, output_attr, output_path)
 
 
 def download_font_assets():
