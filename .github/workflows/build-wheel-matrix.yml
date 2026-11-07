@@ -70,7 +70,7 @@ jobs:
           from pathlib import Path
 
           path = Path("pyproject.toml")
-          text = path.read_text()
+          text = path.read_text(encoding="utf-8")
           text, replacements = re.subn(
               r'(?m)^version = "[^"]+"$',
               f'version = "{os.environ["PACKAGE_VERSION"]}"',
@@ -79,7 +79,7 @@ jobs:
           )
           if replacements != 1:
               raise SystemExit("could not update project version")
-          path.write_text(text)
+          path.write_text(text, encoding="utf-8")
           PY
 
       - name: Build manylinux wheel
@@ -179,7 +179,7 @@ jobs:
           from pathlib import Path
 
           path = Path("pyproject.toml")
-          text = path.read_text()
+          text = path.read_text(encoding="utf-8")
           text, replacements = re.subn(
               r'(?m)^version = "[^"]+"$',
               f'version = "{os.environ["PACKAGE_VERSION"]}"',
@@ -188,7 +188,7 @@ jobs:
           )
           if replacements != 1:
               raise SystemExit("could not update project version")
-          path.write_text(text)
+          path.write_text(text, encoding="utf-8")
           PY
 
       - name: Build manylinux wheel
@@ -282,7 +282,7 @@ jobs:
           from pathlib import Path
 
           path = Path("pyproject.toml")
-          text = path.read_text()
+          text = path.read_text(encoding="utf-8")
           text, replacements = re.subn(
               r'(?m)^version = "[^"]+"$',
               f'version = "{os.environ["PACKAGE_VERSION"]}"',
@@ -291,7 +291,7 @@ jobs:
           )
           if replacements != 1:
               raise SystemExit("could not update project version")
-          path.write_text(text)
+          path.write_text(text, encoding="utf-8")
           PY
 
       - name: Expose zlib headers to freetype-sys (Windows)
@@ -393,7 +393,7 @@ jobs:
           from pathlib import Path
 
           path = Path("pyproject.toml")
-          text = path.read_text()
+          text = path.read_text(encoding="utf-8")
           text, replacements = re.subn(
               r'(?m)^version = "[^"]+"$',
               f'version = "{os.environ["PACKAGE_VERSION"]}"',
@@ -402,7 +402,7 @@ jobs:
           )
           if replacements != 1:
               raise SystemExit("could not update project version")
-          path.write_text(text)
+          path.write_text(text, encoding="utf-8")
           PY
 
       - name: Build source distribution
