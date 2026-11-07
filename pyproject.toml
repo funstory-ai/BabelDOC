@@ -195,6 +195,7 @@ manifest-path = "rust/p2_bridge/Cargo.toml"
 python-source = "."
 module-name = "babeldoc._rust_il"
 include = [
+    { path = "LICENSE", format = "sdist" },
     { path = "rust/vendor/lopdf/**/*", format = "sdist" },
     { path = "scripts/generate_il_rust.py", format = "sdist" },
     { path = "scripts/il_rust_m.py", format = "sdist" },
