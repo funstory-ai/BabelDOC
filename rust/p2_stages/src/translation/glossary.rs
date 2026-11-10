@@ -133,6 +133,15 @@ impl Glossary {
         let mut seen = std::collections::HashSet::new();
         matcher
             .find_overlapping_iter(normalized.as_bytes())
+            .filter(|mat| {
+                let index = mat.pattern().as_usize();
+                is_standalone_match(
+                    &normalized,
+                    mat.start(),
+                    mat.end(),
+                    self.entries[index].source.as_str(),
+                )
+            })
             .filter_map(|mat| {
                 let index = mat.pattern().as_usize();
                 seen.insert(index).then(|| {
@@ -165,6 +174,41 @@ pub fn normalize_source(source: &str) -> String {
 
 fn normalize_match_text(text: &str) -> String {
     collapse_python_whitespace(text)
+}
+
+/// Reports whether the matched span stands on its own instead of being glued to a
+/// neighbouring word character.
+///
+/// Glossary sources are compiled into raw byte patterns, so a source such as `etal`
+/// also fires inside `metal` or `petal`. A match is only accepted when the
+/// characters surrounding it are not ASCII alphanumerics, which keeps the match
+/// word-like for sources that start or end with an ASCII word character.
+///
+/// Sources that do not start or end with an ASCII alphanumeric (CJK terms, terms
+/// wrapped in punctuation, ...) are left unconstrained, because those scripts do
+/// not separate words with whitespace.
+fn is_standalone_match(text: &str, start: usize, end: usize, source: &str) -> bool {
+    let Some(first) = source.chars().next() else {
+        return true;
+    };
+    let Some(last) = source.chars().next_back() else {
+        return true;
+    };
+    if first.is_ascii_alphanumeric() {
+        if let Some(previous) = text.get(..start).and_then(|left| left.chars().next_back()) {
+            if previous.is_ascii_alphanumeric() {
+                return false;
+            }
+        }
+    }
+    if last.is_ascii_alphanumeric() {
+        if let Some(next) = text.get(end..).and_then(|right| right.chars().next()) {
+            if next.is_ascii_alphanumeric() {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn collapse_python_whitespace(text: &str) -> String {
