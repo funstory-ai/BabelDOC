@@ -41,8 +41,9 @@ The paragraph finding process consists of four main steps:
 
 1. Analyze paragraphs with multiple lines
 2. Split paragraphs in two cases:
-   - When encountering table of contents entries (identified by consecutive dots)
+   - When encountering table of contents entries: dot leaders require at least 10 dots if the run contains internal horizontal whitespace (spaces, tabs, or non-breaking spaces), or 20 dots if all dots are contiguous. Whitespace before or after the run does not lower the threshold, and line separators cannot join two runs.
    - When finding lines significantly shorter than the median width (configurable via `short_line_split_factor`)
+3. Keep dot-leader paragraphs separate when merging body text around alternating line numbers, so independent directory page numbers do not cause entries to be joined again.
 
 ## Additional Features
 
@@ -63,7 +64,7 @@ The paragraph finding process consists of four main steps:
 
 2. May not perfectly handle complex layouts with overlapping regions
 
-3. Table of contents detection relies on consecutive dots pattern
+3. Table of contents detection relies on dot leaders meeting the 10-dot spaced or 20-dot contiguous threshold; shorter leaders and entries without dot leaders are not recognized by this rule.
 
 4. Short line splitting might occasionally create incorrect paragraph breaks
 
