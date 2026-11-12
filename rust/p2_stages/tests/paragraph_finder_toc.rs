@@ -288,6 +288,63 @@ fn alternating_body_line_numbers_still_merge() {
 }
 
 #[test]
+fn dot_leader_fragments_on_distinct_lines_do_not_block_body_merging() {
+    for (separator, count) in [("", 10), (" ", 5), ("\u{a0}", 5)] {
+        let fragment = vec!["."; count].join(separator);
+        for fragments_first in [true, false] {
+            // Each physical line is below its leader threshold; only flattening
+            // the two line compositions would create a recognized dot leader.
+            let wrapped = [
+                (format!("Wrapped body {fragment}"), false),
+                (format!("{fragment} continues"), false),
+            ];
+            let rows = if fragments_first {
+                [
+                    wrapped[0].clone(),
+                    wrapped[1].clone(),
+                    ("12".into(), true),
+                    ("Continued body".into(), false),
+                ]
+            } else {
+                [
+                    ("Previous body".into(), false),
+                    ("12".into(), true),
+                    wrapped[0].clone(),
+                    wrapped[1].clone(),
+                ]
+            };
+            let document = find_paragraphs(&rows);
+            let paragraphs = texts(&document);
+            assert_eq!(
+                paragraphs.len(),
+                2,
+                "separator {separator:?}, fragments_first {fragments_first}"
+            );
+            assert!(paragraphs[0].contains("Wrapped body"));
+            assert!(paragraphs[0].contains("continues"));
+            assert_eq!(paragraphs[1], "12");
+
+            let view = document.read();
+            let page = view.document().page_at(&view, 0).unwrap();
+            let body = page.pdf_paragraph_at(&view, 0).unwrap();
+            assert_eq!(body.pdf_paragraph_composition_len(&view).unwrap(), 3);
+            let expected_y = if fragments_first {
+                [700., 685., 655.]
+            } else {
+                [700., 670., 655.]
+            };
+            for (index, y) in expected_y.into_iter().enumerate() {
+                let composition = body.pdf_paragraph_composition_at(&view, index).unwrap();
+                let line = composition.pdf_line(&view).unwrap().unwrap();
+                let bounds = line.r#box(&view).unwrap().unwrap();
+                assert_eq!(bounds.y(&view).unwrap(), Some(y));
+                assert_eq!(bounds.y2(&view).unwrap(), Some(y + 10.));
+            }
+        }
+    }
+}
+
+#[test]
 fn directory_rows_and_formulas_survive_style_grouping() {
     struct Covered;
     impl FontCoverage for Covered {
