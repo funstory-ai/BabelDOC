@@ -20,8 +20,18 @@ type Page = Cursor<types::Page>;
 const LOG_TARGET: &str = "babeldoc.format.pdf.document_il.midend.paragraph_finder";
 static CID_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\(cid:\d+\)$").expect("literal CID regex"));
+// PDF dot leaders can contain explicit or geometry-inserted horizontal spaces.
+// Find runs of at least ten dots without crossing line separators.
 static DOTS_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\.{20,}").expect("literal dots regex"));
+    LazyLock::new(|| Regex::new(r"\.(?:[\t\p{Zs}]*\.){9,}").expect("literal dots regex"));
+fn is_dot_leader(text: &str) -> bool {
+    DOTS_PATTERN.find_iter(text).any(|leader| {
+        let run = leader.as_str();
+        // Internal horizontal spacing lowers the threshold to ten dots.
+        // Leading/trailing whitespace does not qualify a contiguous run.
+        run.chars().any(|ch| ch != '.') || run.len() >= 20
+    })
+}
 fn median(xs: &[f64]) -> f64 {
     match xs.len() {
         0 => 0.,
@@ -85,6 +95,17 @@ fn text_chars_iter(
         out.push_str(character?.char_unicode(v)?.as_deref().unwrap_or(""));
     }
     Ok(out)
+}
+fn has_dot_leader(p: &P, v: &View<'_>) -> Result<bool, StageError> {
+    for composition in p.pdf_paragraph_composition_iter(v)? {
+        if let Some(line) = composition?.pdf_line(v)? {
+            let text = text_chars_iter(line.pdf_character_iter(v)?, v)?;
+            if is_dot_leader(&text) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 fn update(p: &P, v: &mut View<'_>, unicode: bool) -> Result<(), StageError> {
     if p.pdf_paragraph_composition_len(v)? == 0 {
@@ -748,7 +769,7 @@ fn process_page(
                 Some(_) => false,
                 None => false,
             };
-            if DOTS_PATTERN.is_match(&text)
+            if is_dot_leader(&text)
                 || (inputs.config.split_short_lines
                     && need(b.x2, "x2")? - need(b.x, "x")?
                         < width * inputs.config.short_line_split_factor)
@@ -830,12 +851,15 @@ fn process_page(
                     break;
                 }
             }
+            // An intervening directory page number is not a body line number.
             if j > i + 1
                 && j < paras.len()
                 && paras[i].layout_id(v)?.is_some()
                 && paras[i].layout_id(v)? == paras[j].layout_id(v)?
                 && paras[i].xobj_id(v)?.is_some()
                 && paras[i].xobj_id(v)? == paras[j].xobj_id(v)?
+                && !has_dot_leader(&paras[i], v)?
+                && !has_dot_leader(&paras[j], v)?
             {
                 let tail = paras.remove(j);
                 for child_index in 0..tail.pdf_paragraph_composition_len(v)? {

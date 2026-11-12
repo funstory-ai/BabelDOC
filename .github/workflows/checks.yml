@@ -43,6 +43,9 @@ jobs:
       - name: Lint
         run: uv run ruff check .
 
+      - name: TOC paragraph regression
+        run: cargo test --manifest-path rust/Cargo.toml -p babeldoc-p2-stages --test paragraph_finder_toc --locked
+
       - name: Build package
         run: uv build
 
