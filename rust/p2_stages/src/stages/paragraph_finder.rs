@@ -163,6 +163,43 @@ fn line(
     }
     .into_value())
 }
+
+// A descender or a tall math glyph can fill the visual gap between lines.
+// Recover clear left-margin wraps using the PDF text baseline in reading order.
+fn wrapped_line_starts(cs: &[C], v: &View<'_>) -> Result<Vec<usize>, StageError> {
+    let mut glyphs = Vec::new();
+    for (index, ch) in cs.iter().enumerate() {
+        if ch.char_unicode(v)?.as_deref().is_none_or(space) || ch.vertical(v)?.unwrap_or(false) {
+            continue;
+        }
+        let (Some(b), Some(style)) = (ch.r#box(v)?, ch.pdf_style(v)?) else {
+            continue;
+        };
+        let (Some(x), Some(y), Some(size)) = (b.x(v)?, b.y(v)?, style.font_size(v)?) else {
+            continue;
+        };
+        if x.is_finite() && y.is_finite() && size.is_finite() && size > 0. {
+            glyphs.push((index, x, y, size, ch.formula_layout_id(v)?));
+        }
+    }
+    let left = glyphs.iter().map(|glyph| glyph.1).fold(f64::INFINITY, f64::min);
+    let mut starts = Vec::new();
+    for pair in glyphs.windows(2) {
+        let (_, prev_x, prev_y, prev_size, prev_formula) = pair[0];
+        let (index, x, y, size, formula) = pair[1];
+        let em = size.max(prev_size);
+        if size.min(prev_size) >= 0.8 * em
+            && x <= left + 2. * em
+            && prev_x - x >= 3. * em
+            && (0.7 * em..=1.8 * em).contains(&(prev_y - y))
+            && !(formula.is_some_and(|id| id != 0) && formula == prev_formula)
+        {
+            starts.push(index);
+        }
+    }
+    Ok(starts)
+}
+
 fn split_lines(p: &P, v: &mut View<'_>) -> Result<(), StageError> {
     let mut cs = vec![];
     let mut others = vec![];
@@ -232,10 +269,19 @@ fn split_lines(p: &P, v: &mut View<'_>) -> Result<(), StageError> {
         lists[slot].push(ch);
     }
     let mut out = vec![];
-    for cs in lists {
-        if !cs.is_empty() {
-            out.push(line(&cs, v)?);
+    let recover_wraps = matches!(
+        p.layout_label(v)?.as_deref(),
+        Some("plain text" | "text" | "paragraph" | "paragraph_hybrid" | "content")
+    ) && !p.vertical(v)?.unwrap_or(false);
+    for cs in lists.into_iter().filter(|cs| !cs.is_empty()) {
+        let mut start = 0;
+        if recover_wraps {
+            for end in wrapped_line_starts(&cs, v)? {
+                out.push(line(&cs[start..end], v)?);
+                start = end;
+            }
         }
+        out.push(line(&cs[start..], v)?);
     }
     for c in others {
         out.push(c.share(v)?);

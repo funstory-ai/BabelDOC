@@ -693,21 +693,32 @@ fn translatable(page: &Page, v: &mut View<'_>) -> Result<(), StageError> {
     for child_index in 0..page.pdf_paragraph_len(v)? {
         let p = page.pdf_paragraph_at(v, child_index)?;
         let mut out = vec![];
+        let mut previous_formula_line = None;
         for child_index in 0..p.pdf_paragraph_composition_len(v)? {
             let c = p.pdf_paragraph_composition_at(v, child_index)?;
             let Some(f) = c.pdf_formula(v)? else {
+                previous_formula_line = None;
                 out.push(c.share(v)?);
                 continue;
             };
             let raw = f.pdf_character_iter(v)?.collect::<Result<Vec<_>, _>>()?;
             let cs = retained(raw, v)?;
-            if !f.is_corner_mark(v)?.unwrap_or(false)
+            let line = f.line_id(v)?;
+            // A numeric fragment at the start of a new line can continue the
+            // preceding formula. Keep it protected together with that formula.
+            let continues_formula = previous_formula_line
+                .zip(line)
+                .is_some_and(|(previous, current)| previous + 1 == current);
+            if !continues_formula
+                && !f.is_corner_mark(v)?.unwrap_or(false)
                 && !formula_layout(&cs, v)?
                 && f.y_offset(v)?.unwrap_or_default() <= 0.1
                 && TRANSLATABLE_FORMULA_PATTERN.is_match(&formula_text(&cs, v)?)
             {
+                previous_formula_line = None;
                 out.push(new_composition(&cs, false, None, None, v)?);
             } else {
+                previous_formula_line = line;
                 out.push(c.share(v)?);
             }
         }
