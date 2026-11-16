@@ -649,6 +649,10 @@ pub(crate) fn apply_llm_output(
             stage::parse_output(&mut regex, input, &text, hallucination_ids, &mut removed)?;
         Ok((parsed, full, removed))
     })?;
+    if text == input.text {
+        // Keep original character positions so unchanged code retains its line breaks and indentation.
+        return Ok((text, full_match, removed));
+    }
     let mut view = document.view::<TranslationView>();
     let paragraph = view
         .document()
@@ -656,8 +660,6 @@ pub(crate) fn apply_llm_output(
         .map_err(access)?
         .pdf_paragraph_at(&view, paragraph_index)
         .map_err(access)?;
-    // Python 0.6.4 compares the output string with the TranslateInput object;
-    // that branch is unreachable and the paragraph is always rebuilt.
     paragraph
         .set_unicode(&mut view, Some(text.clone()))
         .map_err(access)?;
