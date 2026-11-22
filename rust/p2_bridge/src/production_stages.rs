@@ -217,6 +217,7 @@ pub fn typesetting(
     mapper: &FontMapperHandle,
     monitor: Py<PyAny>,
     cancellation: &CancelFlag,
+    continuations: &[Vec<babeldoc_p2_stages::translation::llm_only::ParagraphId>],
 ) -> PyResult<()> {
     let fields = field(config, "config_fields").unwrap_or(config);
     let total = {
@@ -255,7 +256,7 @@ pub fn typesetting(
     let has_progress = bool_field(config, "progress_monitor_present", true);
     let stage = Typesetting::new(lang, mapper.mapper.clone(), has_progress, styles);
     let mut context = StageContext::new(cancellation, &mut reporter);
-    let result = stage.process(document, &mut context);
+    let result = stage.process_continuations(document, &mut context, continuations);
     finish_stage(&progress, result)?;
     run.close()?;
     Ok(())
