@@ -1,6 +1,7 @@
 //! Direct Python-to-owned-IR handoff. Address memos are local to this loader only.
 use crate::callbacks::{self, CallbackService, CancelFlag, PythonService, Recorder, Request};
 use babeldoc_ir_core::{self as ir, *};
+use babeldoc_p2_stages::translation::page_continuations;
 #[cfg(feature = "stage-capture")]
 use pyo3::exceptions::PyOSError;
 use pyo3::{
@@ -539,6 +540,7 @@ impl MDocument {
         flag: CancelFlag,
         monitor: Py<PyAny>,
     ) -> PyResult<()> {
+        let continuations = page_continuations::find(&mut self.document).map_err(access_error)?;
         let result = crate::ordinary_translation::process(
             py,
             &mut self.document,
@@ -549,6 +551,7 @@ impl MDocument {
             translator_service,
             flag,
             monitor,
+            &continuations,
         );
         if result.is_ok() {
             self.document.compact();
@@ -569,6 +572,7 @@ impl MDocument {
         flag: CancelFlag,
         monitor: Py<PyAny>,
     ) -> PyResult<(usize, usize, usize)> {
+        let continuations = page_continuations::find(&mut self.document).map_err(access_error)?;
         let result = crate::llm_only_translation::process(
             py,
             &mut self.document,
@@ -580,6 +584,7 @@ impl MDocument {
             translator_service,
             flag,
             monitor,
+            &continuations,
         );
         if result.is_ok() {
             self.document.compact();
@@ -792,7 +797,11 @@ impl MDocument {
                 monitor.clone_ref(py),
             )?;
         }
+        let mut continuations = Vec::new();
         if !config.getattr("skip_translation")?.extract::<bool>()? {
+            continuations = py
+                .detach(|| page_continuations::find(&mut self.document))
+                .map_err(access_error)?;
             let translation_mapper = font_mapper
                 .bind(py)
                 .extract::<PyRef<'_, crate::font_mapper::FontMapperHandle>>()?;
@@ -802,29 +811,34 @@ impl MDocument {
                 .getattr("service")?
                 .unbind();
             if supports_llm_translate {
-                self.translate_paragraphs_llm_only(
+                crate::llm_only_translation::process(
                     py,
+                    &mut self.document,
                     config,
                     shared_context.bind(py),
-                    translation_mapper,
+                    &translation_mapper,
                     dispatcher_a.clone_ref(py),
                     dispatcher_b.clone_ref(py),
                     translation_service.clone_ref(py),
                     flag.clone(),
                     monitor.clone_ref(py),
+                    &continuations,
                 )?;
             } else {
-                self.translate_paragraphs(
+                crate::ordinary_translation::process(
                     py,
+                    &mut self.document,
                     config,
                     shared_context.bind(py),
-                    translation_mapper,
+                    &translation_mapper,
                     dispatcher_a.clone_ref(py),
                     translation_service,
                     flag.clone(),
                     monitor.clone_ref(py),
+                    &continuations,
                 )?;
             }
+            self.document.compact();
         }
         #[cfg(feature = "stage-capture")]
         if capture_stages {
@@ -861,6 +875,7 @@ impl MDocument {
                 &typesetting_mapper,
                 typesetting_monitor,
                 &typesetting_flag,
+                &continuations,
             )
         })?;
         writer_cfg.ocr_workaround = config.getattr("ocr_workaround")?.extract::<bool>()?;

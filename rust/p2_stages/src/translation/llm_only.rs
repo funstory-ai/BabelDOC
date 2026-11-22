@@ -112,6 +112,7 @@ pub struct BatchPlan {
     pub id: usize,
     pub paragraphs: Vec<ParagraphId>,
     pub token_count: usize,
+    pub continuation: bool,
 }
 
 pub fn is_body(label: Option<&str>) -> bool {
@@ -137,10 +138,35 @@ fn eligible(p: &ParagraphFacts, min_text_length: usize, body: bool) -> bool {
 
 /// Produces submissions in source order. `multi_paragraph_id` is assigned at
 /// submission time, before any worker can finish.
-pub fn plan_batches(pages: &[Vec<ParagraphFacts>], min_text_length: usize) -> Vec<BatchPlan> {
+pub fn plan_batches(
+    pages: &[Vec<ParagraphFacts>],
+    min_text_length: usize,
+    continuations: &[Vec<ParagraphId>],
+) -> Vec<BatchPlan> {
     let mut translated = std::collections::HashSet::<ParagraphId>::new();
     let mut batches = Vec::new();
     let mut next_id = 1usize;
+    for group in continuations {
+        let token_count = group
+            .iter()
+            .map(|id| {
+                pages[id.page][id.index]
+                    .unicode
+                    .as_deref()
+                    .unwrap_or_default()
+            })
+            .map(count_tokens)
+            .sum();
+        translated.extend(group.iter().copied());
+        batches.push(BatchPlan {
+            kind: GroupKind::CrossPage,
+            id: next_id,
+            paragraphs: group.clone(),
+            token_count,
+            continuation: true,
+        });
+        next_id += 1;
+    }
     for page in 0..pages.len().saturating_sub(1) {
         let left = pages[page]
             .iter()
@@ -176,6 +202,7 @@ pub fn plan_batches(pages: &[Vec<ParagraphFacts>], min_text_length: usize) -> Ve
                 id: next_id,
                 paragraphs: vec![left, right],
                 token_count,
+                continuation: false,
             });
             next_id += 1;
         }
@@ -216,6 +243,7 @@ pub fn plan_batches(pages: &[Vec<ParagraphFacts>], min_text_length: usize) -> Ve
                 id: next_id,
                 paragraphs: vec![first, second],
                 token_count,
+                continuation: false,
             });
             next_id += 1;
         }
@@ -252,6 +280,7 @@ pub fn plan_batches(pages: &[Vec<ParagraphFacts>], min_text_length: usize) -> Ve
                     id: next_id,
                     paragraphs: std::mem::take(&mut group),
                     token_count: tokens,
+                    continuation: false,
                 });
                 next_id += 1;
                 tokens = 0;
@@ -263,6 +292,7 @@ pub fn plan_batches(pages: &[Vec<ParagraphFacts>], min_text_length: usize) -> Ve
                 id: next_id,
                 paragraphs: group,
                 token_count: tokens,
+                continuation: false,
             });
             next_id += 1;
         }

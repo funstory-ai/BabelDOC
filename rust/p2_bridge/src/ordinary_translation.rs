@@ -6,6 +6,9 @@ use crate::{
 };
 use babeldoc_ir_core::{self as ir, Document, Permission, ReadOnlyView, TranslationView, TreeView};
 use babeldoc_p2_stages::translation::ordinary_translation::PlaceholderRegex;
+use babeldoc_p2_stages::translation::{
+    llm_only::ParagraphId, page_continuations, token_count::count_tokens,
+};
 use babeldoc_p2_stages::{ProgressReporter, translation::ordinary_translation as stage};
 use pyo3::{
     exceptions::{PyRuntimeError, PyTypeError},
@@ -969,6 +972,58 @@ pub(crate) struct Job {
     pub(crate) fallback_missing_font_style: Option<FontStyleLookupError>,
 }
 
+impl Job {
+    pub(crate) fn id(&self) -> ParagraphId {
+        ParagraphId {
+            page: self.page,
+            index: self.paragraph,
+        }
+    }
+}
+
+pub(crate) fn group_formula_hint(jobs: &[Job]) -> Option<String> {
+    let hints = jobs
+        .iter()
+        .filter_map(|job| formula_hint(job.input.as_ref()?))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!hints.is_empty()).then_some(hints)
+}
+
+pub(crate) fn continuation_jobs<'a>(
+    jobs: &'a [Job],
+    continuations: &[Vec<ParagraphId>],
+    min_length: usize,
+) -> Vec<Vec<&'a Job>> {
+    if continuations.is_empty() {
+        return Vec::new();
+    }
+    let by_id = jobs
+        .iter()
+        .map(|job| (job.id(), job))
+        .collect::<HashMap<_, _>>();
+    continuations
+        .iter()
+        .filter_map(|group| {
+            let fragments = group
+                .iter()
+                .map(|id| {
+                    let job = *by_id.get(id)?;
+                    let length = job.input.as_ref()?.text.trim().chars().count();
+                    (job.eligible
+                        && !job.cid
+                        && !job.placeholder_only
+                        && job.missing_font_style.is_none()
+                        && length > 0)
+                        .then_some((job, length))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            let length: usize = fragments.iter().map(|(_, length)| length).sum();
+            (length >= min_length).then(|| fragments.into_iter().map(|(job, _)| job).collect())
+        })
+        .collect()
+}
+
 fn rebuild_job_inputs(
     job: &mut Job,
     vertical: bool,
@@ -1464,6 +1519,7 @@ pub fn process(
     translator_service: Py<PyAny>,
     flag: CancelFlag,
     monitor: Py<PyAny>,
+    continuations: &[Vec<ParagraphId>],
 ) -> PyResult<()> {
     let _native_font_mapper = &mapper.mapper;
     let root = crate::shared_context::root_from_handle(shared_context)?;
@@ -1505,6 +1561,15 @@ pub fn process(
         false,
         mapper,
     )?;
+    let mut heads = HashMap::new();
+    let mut tails = HashSet::new();
+    for group in continuation_jobs(&jobs, continuations, min_length) {
+        tails.extend(group[1..].iter().map(|job| job.id()));
+        heads.insert(
+            group[0].id(),
+            group.into_iter().cloned().collect::<Vec<_>>(),
+        );
+    }
     let workers = config
         .getattr("pool_max_workers")?
         .extract::<usize>()?
@@ -1575,6 +1640,10 @@ pub fn process(
                         break;
                     }
                 }
+                if tails.contains(&job.id()) {
+                    continue;
+                }
+                let group = heads.remove(&job.id());
                 let page = job.page;
                 let slot = &mut tracking.page[page].paragraph[job.paragraph];
                 if job.missing_font_style.is_some() {
@@ -1589,7 +1658,7 @@ pub fn process(
                     .input
                     .as_ref()
                     .expect("eligible job has a translate input");
-                if input.text.chars().count() < min_length {
+                if group.is_none() && input.text.chars().count() < min_length {
                     slot.pdf_unicode = Some(job.text.clone());
                     slot.input = Some(input.text.clone());
                     slot.original_placeholders = input.original_tokens.clone();
@@ -1597,19 +1666,24 @@ pub fn process(
                     progress.report(1, None).map_err(|e| e.into_python())?;
                     continue;
                 }
-                let admitted = Arc::new(AtomicBool::new(false));
-                admitted_tracking.push((
-                    job.page,
-                    job.paragraph,
-                    job.text.clone(),
-                    input.text.clone(),
-                    input.original_tokens.clone(),
-                    tracking_placeholders(input),
-                    Arc::clone(&admitted),
-                ));
-                slot.llm_translate_trackers
-                    .push(stage::LlmTracking::default());
-                if supports_llm {
+                let group = group.unwrap_or_else(|| vec![job.clone()]);
+                let source = if group.len() == 1 {
+                    input.text.clone()
+                } else {
+                    let fragments = group
+                        .iter()
+                        .map(|job| {
+                            job.input
+                                .as_ref()
+                                .expect("validated continuation")
+                                .text
+                                .as_str()
+                        })
+                        .collect::<Vec<_>>();
+                    page_continuations::join_texts(&fragments)
+                };
+                let prompt = if supports_llm {
+                    let hint = add_formula_hint.then(|| group_formula_hint(&group)).flatten();
                     let context = stage::context_block(
                         job.title
                             .as_ref()
@@ -1617,60 +1691,64 @@ pub fn process(
                         job.local_title
                             .as_ref()
                             .map(|(id, text)| (id.as_str(), text.as_str())),
-                        add_formula_hint
-                            .then(|| formula_hint(input))
-                            .flatten()
-                            .as_deref(),
+                        hint.as_deref(),
                     );
-                    let prompt = stage::render_prompt(
+                    stage::render_prompt(
                         &roles,
                         &lang_out,
-                        &stage::glossary_block(&input.text, &glossaries),
+                        &stage::glossary_block(&source, &glossaries),
                         &context,
-                        &input.text,
-                    );
-                    if let Some(track) = slot.llm_translate_trackers.last_mut() {
-                        track.input = prompt.clone();
-                    }
-                    let admitted = spawn_request(
-                        &mut tasks,
-                        Arc::clone(&pool),
-                        job,
-                        prompt,
-                        true,
-                        flag.clone(),
-                        progress.clone(),
-                        admitted,
-                    );
-                    submitted += 1;
-                    if submitted <= workers {
-                        let _ = admitted.await;
-                    }
-                    tokio::task::yield_now().await;
+                        &source,
+                    )
                 } else {
-                    let admitted = spawn_request(
-                        &mut tasks,
-                        Arc::clone(&pool),
-                        job.clone(),
+                    source.clone()
+                };
+                let admitted = Arc::new(AtomicBool::new(false));
+                for job in &group {
+                    let input = job
+                        .input
+                        .as_ref()
+                        .expect("eligible job has a translate input");
+                    admitted_tracking.push((
+                        job.page,
+                        job.paragraph,
+                        job.text.clone(),
                         input.text.clone(),
-                        false,
-                        flag.clone(),
-                        progress.clone(),
-                        admitted,
-                    );
-                    submitted += 1;
-                    if submitted <= workers {
-                        let _ = admitted.await;
-                    }
-                    tokio::task::yield_now().await;
+                        input.original_tokens.clone(),
+                        tracking_placeholders(input),
+                        Arc::clone(&admitted),
+                    ));
+                    tracking.page[job.page].paragraph[job.paragraph]
+                        .llm_translate_trackers
+                        .push(stage::LlmTracking {
+                            input: if supports_llm {
+                                prompt.clone()
+                            } else {
+                                String::new()
+                            },
+                            ..Default::default()
+                        });
                 }
+                let admitted = spawn_request(
+                    &mut tasks,
+                    Arc::clone(&pool),
+                    group,
+                    source,
+                    prompt,
+                    supports_llm,
+                    flag.clone(),
+                    progress.clone(),
+                    admitted,
+                );
+                submitted += 1;
+                if submitted <= workers {
+                    let _ = admitted.await;
+                }
+                tokio::task::yield_now().await;
             }
             while let Some(joined) = tasks.join_next().await {
                 match joined {
-                    Ok(Ok(Some((job, response, content_filter)))) => {
-                        translated.push((job, response, content_filter))
-                    }
-                    Ok(Ok(None)) => continue,
+                    Ok(Ok(results)) => translated.extend(results),
                     Ok(Err(error)) => return Err(error),
                     Err(error) => return Err(PyRuntimeError::new_err(error.to_string())),
                 }
@@ -1942,10 +2020,13 @@ pub fn process(
 #[cfg(test)]
 mod ordinary_translation_tests;
 
+type CompletedTranslation = (Job, PyResult<String>, bool);
+
 fn spawn_request(
-    tasks: &mut tokio::task::JoinSet<PyResult<Option<(Job, PyResult<String>, bool)>>>,
+    tasks: &mut tokio::task::JoinSet<PyResult<Vec<CompletedTranslation>>>,
     pool: Arc<TranslatorPoolPair>,
-    job: Job,
+    mut jobs: Vec<Job>,
+    source: String,
     input: String,
     llm: bool,
     flag: CancelFlag,
@@ -1955,26 +2036,30 @@ fn spawn_request(
     let (admitted_tx, admitted_rx) = oneshot::channel();
     tasks.spawn(async move {
         let method = if llm { "llm_translate" } else { "translate" };
+        let token_count = if jobs.len() == 1 {
+            jobs[0].token_count
+        } else {
+            count_tokens(&source)
+        };
         let (args, kwargs) = Python::attach(|py| -> PyResult<_> {
-            let args = PyTuple::new(py, [input.clone()])?.unbind();
+            let args = PyTuple::new(py, [input])?.unbind();
             let params = PyDict::new(py);
-            params.set_item("paragraph_token_count", job.token_count)?;
+            params.set_item("paragraph_token_count", token_count)?;
             let kwargs = PyDict::new(py);
             kwargs.set_item("rate_limit_params", params)?;
             Ok((args, kwargs.unbind()))
         })?;
-        let priority = 1_048_576 - job.token_count as i64;
-        let request_flag = flag.clone();
+        let priority = 1_048_576 - token_count as i64;
         let response = pool
             .request(
                 method,
-                format!("translate:{}:{}", job.page, job.paragraph),
+                format!("translate:{}:{}", jobs[0].page, jobs[0].paragraph),
                 args,
                 Some(kwargs),
                 priority,
                 move || {
                     let _ = admitted_tx.send(());
-                    let allowed = !request_flag.is_cancelled();
+                    let allowed = !flag.is_cancelled();
                     if allowed {
                         recorded.store(true, Ordering::Release);
                     }
@@ -1982,10 +2067,11 @@ fn spawn_request(
                 },
             )
             .await;
+        let count = jobs.len() as u64;
         match response {
             Ok(Some(value)) => {
                 progress
-                    .report(1, None)
+                    .report(count, None)
                     .map_err(|error| error.into_python())?;
                 let result = Python::attach(|py| {
                     value
@@ -1993,20 +2079,44 @@ fn spawn_request(
                         .extract::<String>()
                         .map_err(|_| PyTypeError::new_err("translation response must be a string"))
                 });
-                Ok(Some((job, result, false)))
+                if jobs.len() == 1 {
+                    return Ok(vec![(jobs.pop().unwrap(), result, false)]);
+                }
+                let text = stage::normalize_response_punctuation(&result?);
+                let inputs = jobs
+                    .iter()
+                    .map(|job| job.input.as_ref().expect("validated continuation"))
+                    .collect::<Vec<_>>();
+                let parts = if text.trim() == source {
+                    inputs.iter().map(|input| input.text.clone()).collect()
+                } else {
+                    let Some(parts) = page_continuations::split_translation(&text, &inputs) else {
+                        log::warn!("Cross-page translation could not be split");
+                        return Ok(Vec::new());
+                    };
+                    parts
+                };
+                Ok(jobs
+                    .into_iter()
+                    .zip(parts)
+                    .map(|(job, text)| (job, Ok(text), false))
+                    .collect())
             }
-            Ok(None) => Ok(None),
+            Ok(None) => Ok(Vec::new()),
             Err(crate::callbacks::CallbackError::Python(error)) => {
                 progress
-                    .report(1, None)
+                    .report(count, None)
                     .map_err(|error| error.into_python())?;
-                let is_content_filter = Python::attach(|py| -> PyResult<bool> {
+                Python::attach(|py| -> PyResult<_> {
                     let class = py
                         .import("babeldoc.babeldoc_exception.BabelDOCException")?
                         .getattr("ContentFilterError")?;
-                    Ok(error.is_instance(py, &class))
-                })?;
-                Ok(Some((job, Err(error), is_content_filter)))
+                    let is_content_filter = error.is_instance(py, &class);
+                    Ok(jobs
+                        .into_iter()
+                        .map(|job| (job, Err(error.clone_ref(py)), is_content_filter))
+                        .collect())
+                })
             }
             Err(crate::callbacks::CallbackError::Bridge(message)) => {
                 Err(crate::callbacks::BridgeError::new_err(message))

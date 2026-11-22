@@ -12,6 +12,7 @@ use babeldoc_p2_stages::{
     translation::{
         llm_only as stage,
         ordinary_translation::{self as ordinary_stage, PlaceholderRegex},
+        page_continuations,
         token_count::count_tokens,
     },
 };
@@ -69,6 +70,48 @@ enum ScheduledWork {
 
 fn py_error(error: impl std::fmt::Display) -> PyErr {
     pyo3::exceptions::PyRuntimeError::new_err(error.to_string())
+}
+
+fn split_continuation(jobs: &[ordinary::Job], text: &str) -> Option<Vec<String>> {
+    let inputs = jobs
+        .iter()
+        .map(|job| job.input.as_ref())
+        .collect::<Option<Vec<_>>>()?;
+    page_continuations::split_translation(text, &inputs)
+}
+
+fn expand_continuation(parsed: &mut stage::InterpretResult, jobs: &[ordinary::Job]) {
+    if let [item] = parsed.items.as_slice()
+        && parsed.error.is_none()
+        && parsed.fallback_indices.is_empty()
+        && let Some(parts) = split_continuation(jobs, &item.output)
+    {
+        parsed.items = parts
+            .into_iter()
+            .enumerate()
+            .map(|(id, output)| stage::InterpretedItem {
+                id,
+                output,
+                input_index: 0,
+            })
+            .collect();
+        parsed.ok_count = jobs.len();
+        parsed.processed = jobs.len();
+        return;
+    }
+    parsed.items.clear();
+    parsed.ok_count = 0;
+    parsed.fallback_count = 0;
+    parsed.processed = 0;
+    if parsed.error.is_none() {
+        parsed.error = Some(
+            parsed
+                .fallback_errors
+                .first()
+                .map(|(_, error, _)| error.clone())
+                .unwrap_or_else(|| "Cross-page translation could not be split".into()),
+        );
+    }
 }
 
 fn fallback_request(
@@ -195,6 +238,7 @@ pub fn process(
     translator_service: Py<PyAny>,
     flag: CancelFlag,
     monitor: Py<PyAny>,
+    continuations: &[Vec<stage::ParagraphId>],
 ) -> PyResult<(usize, usize, usize)> {
     let _native_mapper = &mapper.mapper;
     let root = crate::shared_context::root_from_handle(shared_context)?;
@@ -249,10 +293,14 @@ pub fn process(
     });
     let cross_title = initial_first.or_else(|| first_title.clone());
     let cross_recent = initial_recent.or(first_title);
-    let plans = stage::plan_batches(&facts, min_length);
+    let continuations = ordinary::continuation_jobs(&jobs, continuations, min_length)
+        .into_iter()
+        .map(|group| group.into_iter().map(ordinary::Job::id).collect())
+        .collect::<Vec<_>>();
+    let plans = stage::plan_batches(&facts, min_length, &continuations);
     let cross_page_pairs = plans
         .iter()
-        .filter(|plan| plan.kind == stage::GroupKind::CrossPage)
+        .filter(|plan| plan.kind == stage::GroupKind::CrossPage && !plan.continuation)
         .filter_map(|plan| match plan.paragraphs.as_slice() {
             [left, right] => Some([(left.page, left.index), (right.page, right.index)]),
             _ => None,
@@ -297,13 +345,12 @@ pub fn process(
     let mut works = Vec::new();
     let mut tracking = stage::DocumentTracking::new(&page_lengths);
     let mut kind_offsets = HashMap::<stage::GroupKind, usize>::new();
-    for batch in plans {
+    for mut batch in plans {
         let work_jobs = batch
             .paragraphs
             .iter()
             .filter_map(|id| by_id.get(&(id.page, id.index)).cloned())
             .collect::<Vec<_>>();
-        let mut inputs = Vec::new();
         let mut json_items = Vec::new();
         let mut skipped_count = 0;
         let mut prepare_error = None;
@@ -316,16 +363,29 @@ pub fn process(
                 skipped_count += 1;
                 continue;
             };
-            if input.text.chars().count() < min_length {
+            if !batch.continuation && input.text.chars().count() < min_length {
                 skipped_count += 1;
                 continue;
             }
             let label = job.layout_label.clone();
-            let hint = formula_hints
+            let hint = (formula_hints && !batch.continuation)
                 .then(|| ordinary::formula_hint(input))
                 .flatten();
-            inputs.push(input.text.clone());
             json_items.push((input.text.clone(), label, hint));
+        }
+        if batch.continuation && !json_items.is_empty() {
+            let text = page_continuations::join_texts(
+                &json_items
+                    .iter()
+                    .map(|item| item.0.as_str())
+                    .collect::<Vec<_>>(),
+            );
+            let label = json_items[0].1.clone();
+            let hint = formula_hints
+                .then(|| ordinary::group_formula_hint(&work_jobs))
+                .flatten();
+            batch.token_count = count_tokens(&text);
+            json_items = vec![(text, label, hint)];
         }
         let serialized = stage::batch_json(&json_items, formula_hints);
         let matching_text = json_items
@@ -333,6 +393,7 @@ pub fn process(
             .map(|(input, _, _)| input.as_str())
             .collect::<Vec<_>>()
             .join("\n");
+        let inputs = json_items.into_iter().map(|(text, _, _)| text).collect();
         let first = work_jobs.first();
         let last = work_jobs.last();
         let (title_value, local_title_value) = if batch.kind == stage::GroupKind::Page {
@@ -503,7 +564,7 @@ pub fn process(
             // A jobs are all submitted and joined before B is drained; fallback
             // requests are submitted to their independent equal-capacity pool.
             let mut a_tasks = tokio::task::JoinSet::new();
-            let mut b_tasks = tokio::task::JoinSet::new();
+            let mut b_tasks = tokio::task::JoinSet::<PyResult<Vec<Output>>>::new();
             let mut by_batch = Vec::new();
             for scheduled in schedule {
                 let work = match scheduled {
@@ -636,15 +697,21 @@ pub fn process(
                     }
                     None => (String::new(), None, None),
                 };
-                let parsed = stage::interpret_response(&response, &inputs, false);
+                let mut parsed = stage::interpret_response(&response, &inputs, false);
+                let fragment_count = if work.batch.continuation {
+                    expand_continuation(&mut parsed, &work.jobs);
+                    work.jobs.len()
+                } else {
+                    inputs.len()
+                };
                 let outer_error = request_error.is_some() || parsed.error.is_some();
                 counters_out.0.fetch_add(parsed.ok_count, Ordering::Relaxed);
                 counters_out.1.fetch_add(
-                    parsed.fallback_count + if outer_error { inputs.len() } else { 0 },
+                    parsed.fallback_count + if outer_error { fragment_count } else { 0 },
                     Ordering::Relaxed,
                 );
                 counters_out.2.fetch_add(
-                    parsed.processed + if outer_error { inputs.len() } else { 0 },
+                    parsed.processed + if outer_error { fragment_count } else { 0 },
                     Ordering::Relaxed,
                 );
                 let group_index = work.tracker_group;
@@ -655,7 +722,7 @@ pub fn process(
                 let llm_error = request_error.or(parsed.error);
                 let fallback_errors = parsed.fallback_errors;
                 let fallback_indices = if llm_error.is_some() {
-                    (0..inputs.len()).collect()
+                    (0..fragment_count).collect()
                 } else {
                     parsed.fallback_indices
                 };
@@ -676,7 +743,7 @@ pub fn process(
                         progress.report(1, None).map_err(|e| e.into_python())?;
                         continue;
                     };
-                    if input.text.chars().count() < min_length {
+                    if !work.batch.continuation && input.text.chars().count() < min_length {
                         let slot = match work.batch.kind {
                             stage::GroupKind::Page => {
                                 &mut result_tracking.page[id.page].paragraph[id.index]
@@ -723,7 +790,8 @@ pub fn process(
                         slot.original_placeholders = input.original_tokens.clone();
                         slot.placeholders = ordinary::tracking_placeholders(&input);
                         slot.multi_paragraph_id = Some(work.batch.id);
-                        slot.multi_paragraph_index = Some(pos);
+                        slot.multi_paragraph_index =
+                            Some(if work.batch.continuation { 0 } else { pos });
                         let mut llm_tracker = ordinary_stage::LlmTracking {
                             input: if work.prepare_error.is_some() {
                                 String::new()
@@ -768,11 +836,14 @@ pub fn process(
                         });
                         progress.report(1, None).map_err(|e| e.into_python())?;
                     }
+                    if work.batch.continuation && pos != 0 {
+                        continue;
+                    }
                     let fallback_times = fallback_indices
                         .iter()
                         .filter(|index| **index == pos)
                         .count();
-                    if fallback_times > 0 {
+                    if fallback_times > 0 && !work.batch.continuation {
                         // Python's LLM-only tracker keeps paragraph.unicode for the
                         // direct request, then its ordinary fallback path rebuilds
                         // unicode from the paragraph compositions before tracking.
@@ -784,17 +855,40 @@ pub fn process(
                         }
                     }
                     for _ in 0..fallback_times {
-                        let Some(request) =
+                        let (text, hint, fallback_token_count, targets) = if work.batch.continuation
+                        {
+                            let targets = work
+                                .jobs
+                                .iter()
+                                .map(|job| {
+                                    (
+                                        job.clone(),
+                                        job.input.clone().expect("validated continuation"),
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            (
+                                inputs[0].clone(),
+                                formula_hints
+                                    .then(|| ordinary::group_formula_hint(&work.jobs))
+                                    .flatten(),
+                                work.batch.token_count,
+                                targets,
+                            )
+                        } else if let Some(request) =
                             fallback_request(&job, formula_hints, llm_error.is_some())
-                        else {
+                            && request.text.chars().count() >= min_length
+                        {
+                            (
+                                request.text,
+                                request.formula_hint,
+                                request.paragraph_token_count,
+                                vec![(job.clone(), request.input)],
+                            )
+                        } else {
                             progress.report(1, None).map_err(|e| e.into_python())?;
                             continue;
                         };
-                        let text = request.text.clone();
-                        if text.chars().count() < min_length {
-                            progress.report(1, None).map_err(|e| e.into_python())?;
-                            continue;
-                        }
                         let (fallback_title, fallback_local) = (
                             work.title_context.as_ref(),
                             work.local_title_context.as_ref(),
@@ -802,7 +896,7 @@ pub fn process(
                         let context = ordinary_stage::context_block(
                             fallback_title.map(|(id, t)| (id.as_str(), t.as_str())),
                             fallback_local.map(|(id, t)| (id.as_str(), t.as_str())),
-                            request.formula_hint.as_deref(),
+                            hint.as_deref(),
                         );
                         let prompt = ordinary_stage::render_prompt(
                             &roles,
@@ -811,7 +905,6 @@ pub fn process(
                             &context,
                             &text,
                         );
-                        let fallback_token_count = request.paragraph_token_count;
                         let (args, kwargs) = Python::attach(|py| {
                             request_args(py, &prompt, fallback_token_count, false)
                         })?;
@@ -819,10 +912,6 @@ pub fn process(
                         let flag = flag.clone();
                         let p = progress.clone();
                         let job_id = format!("fallback:{}:{}", job.page, job.paragraph);
-                        let job_for_task = job.clone();
-                        let input_for_task = request.input;
-                        let fallback_prompt = prompt.clone();
-                        let indices = (tracker_kind, tracker_group, tracker_index);
                         b_tasks.spawn(async move {
                             let response = pool
                                 .request(
@@ -834,41 +923,68 @@ pub fn process(
                                     move || !flag.is_cancelled(),
                                 )
                                 .await;
-                            match response {
-                                Ok(Some(value)) => {
-                                    let text = Python::attach(|py| {
-                                        value.bind(py).extract::<String>().map_err(|_| {
-                                            PyTypeError::new_err(
-                                                "fallback llm_translate response must be a string",
-                                            )
-                                        })
-                                    })?;
-                                    p.report(1, None).map_err(|e| e.into_python())?;
-                                    Ok(Some(Output {
-                                        job: job_for_task,
-                                        input: input_for_task,
-                                        text,
-                                        fallback: true,
-                                        fallback_prompt: Some(fallback_prompt),
-                                        tracker_kind: indices.0,
-                                        tracker_group: indices.1,
-                                        tracker_index: indices.2,
-                                    }))
+                            let value = match response {
+                                Ok(Some(value)) => value,
+                                Ok(None) => return Ok(Vec::new()),
+                                Err(crate::callbacks::CallbackError::Python(_)) => {
+                                    if targets.len() > 1 {
+                                        p.report(targets.len() as u64, None)
+                                            .map_err(|e| e.into_python())?;
+                                    }
+                                    return Ok(Vec::new());
                                 }
-                                Ok(None) => Ok(None),
-                                Err(crate::callbacks::CallbackError::Python(_)) => Ok(None),
                                 Err(crate::callbacks::CallbackError::Bridge(error)) => {
-                                    Err(py_error(error))
+                                    return Err(py_error(error));
                                 }
-                            }
+                            };
+                            let output = Python::attach(|py| {
+                                value.bind(py).extract::<String>().map_err(|_| {
+                                    PyTypeError::new_err(
+                                        "fallback llm_translate response must be a string",
+                                    )
+                                })
+                            })?;
+                            p.report(targets.len() as u64, None)
+                                .map_err(|e| e.into_python())?;
+                            let parts = if targets.len() == 1 {
+                                vec![output]
+                            } else {
+                                if output.trim() == text {
+                                    return Ok(Vec::new());
+                                }
+                                let sources =
+                                    targets.iter().map(|(_, input)| input).collect::<Vec<_>>();
+                                let output =
+                                    ordinary_stage::normalize_response_punctuation(&output);
+                                let Some(parts) =
+                                    page_continuations::split_translation(&output, &sources)
+                                else {
+                                    log::warn!("Cross-page translation could not be split");
+                                    return Ok(Vec::new());
+                                };
+                                parts
+                            };
+                            Ok(targets
+                                .into_iter()
+                                .zip(parts)
+                                .enumerate()
+                                .map(|(offset, ((job, input), text))| Output {
+                                    job,
+                                    input,
+                                    text,
+                                    fallback: true,
+                                    fallback_prompt: Some(prompt.clone()),
+                                    tracker_kind,
+                                    tracker_group,
+                                    tracker_index: tracker_index + offset,
+                                })
+                                .collect())
                         });
                     }
                 }
             }
             while let Some(joined) = b_tasks.join_next().await {
-                if let Some(output) = joined.map_err(|e| py_error(e))?? {
-                    outputs.push(output);
-                }
+                outputs.extend(joined.map_err(|e| py_error(e))??);
             }
             Ok::<_, PyErr>(outputs)
         });

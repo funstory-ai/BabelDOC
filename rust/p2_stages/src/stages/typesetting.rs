@@ -1,6 +1,6 @@
 //! Serial typesetting on M IR. Geometry trials use private numeric caches.
 //! Document navigation and writes go exclusively through generated access.
-use crate::{StageContext, StageError};
+use crate::{StageContext, StageError, translation::llm_only::ParagraphId};
 use babeldoc_font_core::{FontFace, FontMapper, SourceFontStyle};
 use babeldoc_il_types::schema::Box;
 use babeldoc_ir_core::{self as ir, Cursor, FieldValue, TreeView, TypesettingView, types};
@@ -1364,6 +1364,7 @@ impl Typesetting {
         initial: f64,
         english: bool,
         apply: bool,
+        preserve_box: bool,
         v: &mut View<'_>,
     ) -> Result<f64, StageError> {
         let Some(b) = p.r#box(v)? else {
@@ -1374,7 +1375,7 @@ impl Typesetting {
         let skip = if self.is_cjk { 1.5 } else { 1.3 };
         let mut expand = 0;
         while scale >= 0.1 {
-            if let Ok((placed, fit)) = self.layout(
+            if let Ok((mut placed, fit)) = self.layout(
                 units,
                 &b,
                 scale,
@@ -1382,7 +1383,14 @@ impl Typesetting {
                 p.first_line_indent(v)?.unwrap_or(false),
                 english,
             ) {
-                if fit {
+                let fits_original_box = !preserve_box
+                    || placed.iter_mut().all(|unit| {
+                        unit.box_value().is_ok_and(|unit_box| {
+                            unit_box.y >= b.y.map(|y| y - 0.5)
+                                && unit_box.x2 <= b.x2.map(|x2| x2 + 0.5)
+                        })
+                    });
+                if fit && fits_original_box {
                     let mut failed = false;
                     if apply {
                         p.set_scale(v, Some(scale))?;
@@ -1426,7 +1434,7 @@ impl Typesetting {
                 return Ok(scale);
             }
             scale -= if scale > 0.6 { 0.05 } else { 0.1 };
-            if scale < 0.7 {
+            if scale < 0.7 && !preserve_box {
                 let mut expanded = false;
                 if expand == 0 {
                     if let Ok(y) = self.conflict(&b, page, index, true, v) {
@@ -1462,7 +1470,20 @@ impl Typesetting {
             }
         }
         if english {
-            self.optimal(p, page, index, units, initial, false, apply, v)
+            self.optimal(
+                p,
+                page,
+                index,
+                units,
+                initial,
+                false,
+                apply,
+                preserve_box,
+                v,
+            )
+        } else if preserve_box {
+            // Exceptionally long text or large formulas may need extra room.
+            self.optimal(p, page, index, units, initial, true, apply, false, v)
         } else {
             Ok(0.1)
         }
@@ -1473,6 +1494,7 @@ impl Typesetting {
         page: &Page,
         index: usize,
         fonts: &FontTable,
+        preserve_box: bool,
         v: &mut View<'_>,
     ) -> Result<(), StageError> {
         let mut units = self.create_units(p, fonts, v)?;
@@ -1504,7 +1526,17 @@ impl Typesetting {
         }
         let initial = p.optimal_scale(v)?.unwrap_or(1.);
         p.set_pdf_paragraph_composition(v, vec![])?;
-        self.optimal(p, page, index, &mut units, initial, true, true, v)?;
+        self.optimal(
+            p,
+            page,
+            index,
+            &mut units,
+            initial,
+            true,
+            true,
+            preserve_box,
+            v,
+        )?;
         if let Some(order) = p.render_order(v)? {
             let mut sub = 1;
             for child_index in 0..p.pdf_paragraph_composition_len(v)? {
@@ -1523,15 +1555,18 @@ impl Typesetting {
         pages: &[Page],
         v: &mut View<'_>,
         ctx: &mut StageContext<'_>,
+        continuations: &[Vec<P>],
+        fixed: &HashSet<u64>,
     ) -> Result<(), StageError> {
         let mut weighted_scales = HashMap::<u64, (f64, usize)>::new();
         let mut nan_min = None;
         let mut has_weighted_scale = false;
-        for page in pages.iter() {
+        for page in pages {
             ctx.report_progress(1, Some(pages.len() as u64 * 2))?;
             let fonts = self.font_map(page, v)?;
             for index in 0..page.pdf_paragraph_len(v)? {
                 let p = page.pdf_paragraph_at(v, index)?;
+                let preserve_box = fixed.contains(&p.identity());
                 let result = (|| {
                     let mut units = self.create_units(&p, &fonts, v)?;
                     let count = units
@@ -1541,7 +1576,17 @@ impl Typesetting {
                     let scale = if units.iter_mut().all(TypesettingUnit::can_passthrough) {
                         1.
                     } else {
-                        self.optimal(&p, page, index, &mut units, 1., true, false, v)?
+                        self.optimal(
+                            &p,
+                            page,
+                            index,
+                            &mut units,
+                            1.,
+                            true,
+                            false,
+                            preserve_box,
+                            v,
+                        )?
                     };
                     p.set_optimal_scale(v, Some(scale))?;
                     Ok::<_, StageError>(count)
@@ -1555,7 +1600,7 @@ impl Typesetting {
                     }
                 };
                 if let Some(scale) = p.optimal_scale(v)? {
-                    if count > 0 {
+                    if count > 0 && !preserve_box {
                         has_weighted_scale = true;
                         if scale.is_nan() {
                             nan_min = Some(match nan_min {
@@ -1572,9 +1617,9 @@ impl Typesetting {
                 }
             }
         }
-        if !has_weighted_scale {
+        if !has_weighted_scale && fixed.is_empty() {
             error!(target:LOG_TARGET,"document_scales is empty, there seems no paragraph in this PDF");
-        } else {
+        } else if has_weighted_scale {
             // `modes` compared values with `==`: NaNs never matched themselves,
             // so they lose to any non-NaN value and otherwise total-order to the limit.
             let max_count = weighted_scales.values().map(|(_, count)| *count).max();
@@ -1591,15 +1636,32 @@ impl Typesetting {
             for page in pages {
                 for child_index in 0..page.pdf_paragraph_len(v)? {
                     let p = page.pdf_paragraph_at(v, child_index)?;
+                    if fixed.contains(&p.identity()) {
+                        continue;
+                    }
                     if p.optimal_scale(v)?.is_some_and(|s| s > limit) {
                         p.set_optimal_scale(v, Some(limit))?
                     }
                 }
             }
         }
+        for group in continuations {
+            let mut scale = 1.0_f64;
+            for p in group {
+                scale = scale.min(p.optimal_scale(v)?.unwrap_or(1.0));
+            }
+            for p in group {
+                p.set_optimal_scale(v, Some(scale))?;
+            }
+        }
         Ok(())
     }
-    fn render_page(&self, page: &Page, v: &mut View<'_>) -> Result<(), StageError> {
+    fn render_page(
+        &self,
+        page: &Page,
+        fixed: &HashSet<u64>,
+        v: &mut View<'_>,
+    ) -> Result<(), StageError> {
         let fonts = self.font_map(page, v)?;
         let paragraph_len = page.pdf_paragraph_len(v)?;
         let mut indexed = vec![];
@@ -1613,7 +1675,11 @@ impl Typesetting {
         }
         let adjustment = (|| -> Result<(), StageError> {
             for (i, _) in &indexed {
-                let Some(b) = page.pdf_paragraph_at(v, *i)?.r#box(v)? else {
+                let p = page.pdf_paragraph_at(v, *i)?;
+                if fixed.contains(&p.identity()) {
+                    continue;
+                }
+                let Some(b) = p.r#box(v)? else {
                     continue;
                 };
                 let upper = box_coordinates(&read_box(b.clone(), v)?)?;
@@ -1647,7 +1713,8 @@ impl Typesetting {
         }
         for index in 0..paragraph_len {
             let p = page.pdf_paragraph_at(v, index)?;
-            self.render_paragraph(&p, page, index, &fonts, v)?
+            let preserve_box = fixed.contains(&p.identity());
+            self.render_paragraph(&p, page, index, &fonts, preserve_box, v)?
         }
         Ok(())
     }
@@ -1656,14 +1723,32 @@ impl Typesetting {
         d: &mut ir::Document,
         ctx: &mut StageContext<'_>,
     ) -> Result<(), StageError> {
+        self.process_continuations(d, ctx, &[])
+    }
+
+    pub fn process_continuations(
+        &self,
+        d: &mut ir::Document,
+        ctx: &mut StageContext<'_>,
+        continuations: &[Vec<ParagraphId>],
+    ) -> Result<(), StageError> {
         let mut v = d.view::<TypesettingView>();
         let pages = v.document().page_iter(&v)?.collect::<Result<Vec<_>, _>>()?;
+        let continuations = continuations
+            .iter()
+            .map(|group| {
+                group.iter()
+                    .map(|id| pages[id.page].pdf_paragraph_at(&v, id.index))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let fixed = continuations.iter().flatten().map(P::identity).collect();
         if self.progress {
-            self.preprocess(&pages, &mut v, ctx)?
+            self.preprocess(&pages, &mut v, ctx, &continuations, &fixed)?
         }
-        for p in pages.iter() {
+        for p in &pages {
             ctx.check_cancelled()?;
-            self.render_page(p, &mut v)?;
+            self.render_page(p, &fixed, &mut v)?;
             if self.progress {
                 ctx.report_progress(1, Some(pages.len() as u64 * 2))?;
             }
