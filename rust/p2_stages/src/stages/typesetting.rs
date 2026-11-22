@@ -1562,11 +1562,18 @@ impl Typesetting {
         let mut nan_min = None;
         let mut has_weighted_scale = false;
         for page in pages {
-            ctx.report_progress(1, Some(pages.len() as u64 * 2))?;
+            if self.progress {
+                ctx.report_progress(1, Some(pages.len() as u64 * 2))?;
+            } else {
+                ctx.check_cancelled()?;
+            }
             let fonts = self.font_map(page, v)?;
             for index in 0..page.pdf_paragraph_len(v)? {
                 let p = page.pdf_paragraph_at(v, index)?;
                 let preserve_box = fixed.contains(&p.identity());
+                if !self.progress && !preserve_box {
+                    continue;
+                }
                 let result = (|| {
                     let mut units = self.create_units(&p, &fonts, v)?;
                     let count = units
@@ -1743,7 +1750,7 @@ impl Typesetting {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let fixed = continuations.iter().flatten().map(P::identity).collect();
-        if self.progress {
+        if self.progress || !continuations.is_empty() {
             self.preprocess(&pages, &mut v, ctx, &continuations, &fixed)?
         }
         for p in &pages {

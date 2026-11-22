@@ -1619,6 +1619,29 @@ pub fn process(
             .map_err(ProgressError::into_python)?;
         let result = runtime.block_on(async {
             let mut tasks = tokio::task::JoinSet::new();
+            let render_input = |group: &[Job], source: &str| {
+                if !supports_llm {
+                    return source.to_owned();
+                }
+                let job = &group[0];
+                let hint = add_formula_hint.then(|| group_formula_hint(group)).flatten();
+                let context = stage::context_block(
+                    job.title
+                        .as_ref()
+                        .map(|(id, text)| (id.as_str(), text.as_str())),
+                    job.local_title
+                        .as_ref()
+                        .map(|(id, text)| (id.as_str(), text.as_str())),
+                    hint.as_deref(),
+                );
+                stage::render_prompt(
+                    &roles,
+                    &lang_out,
+                    &stage::glossary_block(source, &glossaries),
+                    &context,
+                    source,
+                )
+            };
             let mut tracking = stage::TranslationTracking {
                 page: page_lengths
                     .iter()
@@ -1682,27 +1705,7 @@ pub fn process(
                         .collect::<Vec<_>>();
                     page_continuations::join_texts(&fragments)
                 };
-                let prompt = if supports_llm {
-                    let hint = add_formula_hint.then(|| group_formula_hint(&group)).flatten();
-                    let context = stage::context_block(
-                        job.title
-                            .as_ref()
-                            .map(|(id, text)| (id.as_str(), text.as_str())),
-                        job.local_title
-                            .as_ref()
-                            .map(|(id, text)| (id.as_str(), text.as_str())),
-                        hint.as_deref(),
-                    );
-                    stage::render_prompt(
-                        &roles,
-                        &lang_out,
-                        &stage::glossary_block(&source, &glossaries),
-                        &context,
-                        &source,
-                    )
-                } else {
-                    source.clone()
-                };
+                let prompt = render_input(&group, &source);
                 let admitted = Arc::new(AtomicBool::new(false));
                 for job in &group {
                     let input = job
@@ -1738,7 +1741,7 @@ pub fn process(
                     supports_llm,
                     flag.clone(),
                     progress.clone(),
-                    admitted,
+                    Some(admitted),
                 );
                 submitted += 1;
                 if submitted <= workers {
@@ -1748,7 +1751,47 @@ pub fn process(
             }
             while let Some(joined) = tasks.join_next().await {
                 match joined {
-                    Ok(Ok(results)) => translated.extend(results),
+                    Ok(Ok(TranslationCompletion::Finished(results))) => {
+                        translated.extend(results)
+                    }
+                    Ok(Ok(TranslationCompletion::RetryFragments(group))) => {
+                        for job in group {
+                            let source = job
+                                .input
+                                .as_ref()
+                                .expect("validated continuation")
+                                .text
+                                .clone();
+                            let prompt = render_input(std::slice::from_ref(&job), &source);
+                            let trackers = &mut tracking.page[job.page].paragraph[job.paragraph]
+                                .llm_translate_trackers;
+                            if let Some(initial) = trackers.last_mut() {
+                                initial.fallback_to_translate = true;
+                                initial.has_error = true;
+                                initial.error_message =
+                                    "Cross-page translation could not be split".into();
+                            }
+                            trackers.push(stage::LlmTracking {
+                                input: if supports_llm {
+                                    prompt.clone()
+                                } else {
+                                    String::new()
+                                },
+                                ..Default::default()
+                            });
+                            let _admitted = spawn_request(
+                                &mut tasks,
+                                Arc::clone(&pool),
+                                vec![job],
+                                source,
+                                prompt,
+                                supports_llm,
+                                flag.clone(),
+                                progress.clone(),
+                                None,
+                            );
+                        }
+                    }
                     Ok(Err(error)) => return Err(error),
                     Err(error) => return Err(PyRuntimeError::new_err(error.to_string())),
                 }
@@ -2022,8 +2065,13 @@ mod ordinary_translation_tests;
 
 type CompletedTranslation = (Job, PyResult<String>, bool);
 
+enum TranslationCompletion {
+    Finished(Vec<CompletedTranslation>),
+    RetryFragments(Vec<Job>),
+}
+
 fn spawn_request(
-    tasks: &mut tokio::task::JoinSet<PyResult<Vec<CompletedTranslation>>>,
+    tasks: &mut tokio::task::JoinSet<PyResult<TranslationCompletion>>,
     pool: Arc<TranslatorPoolPair>,
     mut jobs: Vec<Job>,
     source: String,
@@ -2031,7 +2079,7 @@ fn spawn_request(
     llm: bool,
     flag: CancelFlag,
     progress: PythonProgress,
-    recorded: Arc<AtomicBool>,
+    recorded: Option<Arc<AtomicBool>>,
 ) -> oneshot::Receiver<()> {
     let (admitted_tx, admitted_rx) = oneshot::channel();
     tasks.spawn(async move {
@@ -2060,29 +2108,41 @@ fn spawn_request(
                 move || {
                     let _ = admitted_tx.send(());
                     let allowed = !flag.is_cancelled();
-                    if allowed {
+                    if allowed && let Some(recorded) = recorded {
                         recorded.store(true, Ordering::Release);
                     }
                     allowed
                 },
             )
             .await;
-        let count = jobs.len() as u64;
-        match response {
+        let (result, content_filter) = match response {
             Ok(Some(value)) => {
-                progress
-                    .report(count, None)
-                    .map_err(|error| error.into_python())?;
                 let result = Python::attach(|py| {
                     value
                         .bind(py)
                         .extract::<String>()
                         .map_err(|_| PyTypeError::new_err("translation response must be a string"))
                 });
-                if jobs.len() == 1 {
-                    return Ok(vec![(jobs.pop().unwrap(), result, false)]);
-                }
-                let text = stage::normalize_response_punctuation(&result?);
+                (result, false)
+            }
+            Ok(None) => return Ok(TranslationCompletion::Finished(Vec::new())),
+            Err(crate::callbacks::CallbackError::Python(error)) => {
+                let content_filter = Python::attach(|py| -> PyResult<_> {
+                    let class = py
+                        .import("babeldoc.babeldoc_exception.BabelDOCException")?
+                        .getattr("ContentFilterError")?;
+                    Ok(error.is_instance(py, &class))
+                })?;
+                (Err(error), content_filter)
+            }
+            Err(crate::callbacks::CallbackError::Bridge(message)) => {
+                return Err(crate::callbacks::BridgeError::new_err(message));
+            }
+        };
+        let count = jobs.len() as u64;
+        let translations = match result {
+            Ok(text) if count > 1 => {
+                let text = stage::normalize_response_punctuation(&text);
                 let inputs = jobs
                     .iter()
                     .map(|job| job.input.as_ref().expect("validated continuation"))
@@ -2091,37 +2151,29 @@ fn spawn_request(
                     inputs.iter().map(|input| input.text.clone()).collect()
                 } else {
                     let Some(parts) = page_continuations::split_translation(&text, &inputs) else {
-                        log::warn!("Cross-page translation could not be split");
-                        return Ok(Vec::new());
+                        log::warn!(
+                            "Cross-page translation could not be split, retrying page fragments"
+                        );
+                        return Ok(TranslationCompletion::RetryFragments(jobs));
                     };
                     parts
                 };
-                Ok(jobs
-                    .into_iter()
+                jobs.into_iter()
                     .zip(parts)
                     .map(|(job, text)| (job, Ok(text), false))
-                    .collect())
+                    .collect()
             }
-            Ok(None) => Ok(Vec::new()),
-            Err(crate::callbacks::CallbackError::Python(error)) => {
-                progress
-                    .report(count, None)
-                    .map_err(|error| error.into_python())?;
-                Python::attach(|py| -> PyResult<_> {
-                    let class = py
-                        .import("babeldoc.babeldoc_exception.BabelDOCException")?
-                        .getattr("ContentFilterError")?;
-                    let is_content_filter = error.is_instance(py, &class);
-                    Ok(jobs
-                        .into_iter()
-                        .map(|job| (job, Err(error.clone_ref(py)), is_content_filter))
-                        .collect())
-                })
-            }
-            Err(crate::callbacks::CallbackError::Bridge(message)) => {
-                Err(crate::callbacks::BridgeError::new_err(message))
-            }
-        }
+            Err(error) if count > 1 => Python::attach(|py| {
+                jobs.into_iter()
+                    .map(|job| (job, Err(error.clone_ref(py)), content_filter))
+                    .collect()
+            }),
+            result => vec![(jobs.pop().unwrap(), result, content_filter)],
+        };
+        progress
+            .report(count, None)
+            .map_err(|error| error.into_python())?;
+        Ok(TranslationCompletion::Finished(translations))
     });
     admitted_rx
 }

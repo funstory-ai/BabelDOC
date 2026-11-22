@@ -6,6 +6,7 @@ import pytest
 from babeldoc.assets.assets import get_font_and_metadata
 from babeldoc.docvision.base_doclayout import YoloBox
 from babeldoc.docvision.base_doclayout import YoloResult
+from babeldoc.format.pdf import high_level
 from babeldoc.format.pdf.high_level import translate
 from babeldoc.format.pdf.translation_config import TranslationConfig
 from babeldoc.format.pdf.translation_config import WatermarkOutputMode
@@ -261,13 +262,35 @@ def test_incomplete_response_retries_the_joined_paragraph(translate_pdf):
 
 
 @pytest.mark.parametrize("use_llm", [True, False])
-def test_unsplittable_translation_keeps_both_source_pages(translate_pdf, use_llm):
+def test_unsplittable_translation_fallback(translate_pdf, use_llm):
     translator = Translator(use_llm)
-    translator.translations[" ".join(SOURCE)] = "Incomplete"
+    joined = " ".join(SOURCE)
+    translator.translations[joined] = "Incomplete"
     output = translate_pdf(translator, [[(54, 740, SOURCE[0])], [(54, 70, SOURCE[1])]])
-    assert len(translator.requests) == (2 if use_llm else 1)
+    if use_llm:
+        assert len(translator.requests) == 2
+    else:
+        assert translator.requests[0] == joined
+        assert sorted(translator.requests[1:]) == sorted(SOURCE)
     with pymupdf.open(output) as pdf:
-        assert [" ".join(page.get_text().split()) for page in pdf] == list(SOURCE)
+        assert [" ".join(page.get_text().split()) for page in pdf] == list(
+            SOURCE if use_llm else TARGET
+        )
+
+
+def test_non_string_continuation_does_not_abort_other_translations(translate_pdf):
+    separate = "The second experiment is complete."
+    translated = "La seconde experience est terminee."
+    translator = Translator(False)
+    translator.translations[" ".join(SOURCE)] = 42
+    translator.translations[separate] = translated
+    output = translate_pdf(
+        translator,
+        [[(54, 740, SOURCE[0])], [(54, 70, SOURCE[1]), (54, 400, separate)]],
+    )
+    with pymupdf.open(output) as pdf:
+        assert " ".join(pdf[0].get_text().split()) == SOURCE[0]
+        assert " ".join(pdf[1].get_text().split()) == f"{SOURCE[1]} {translated}"
 
 
 def test_long_continuation_stays_in_its_page_region(translate_pdf):
@@ -288,7 +311,18 @@ def test_long_continuation_stays_in_its_page_region(translate_pdf):
         assert max(word[3] for word in first_page_words) <= 745
 
 
-def test_continuation_preserves_styles_on_both_pages(translate_pdf):
+@pytest.mark.parametrize("with_progress", [True, False])
+def test_continuation_preserves_styles_on_both_pages(
+    translate_pdf, monkeypatch, with_progress
+):
+    stage_configs = high_level._rust_stage_configs
+
+    def configure_stages(config, run_context):
+        stages = stage_configs(config, run_context)
+        stages["typesetting"]["progress_monitor_present"] = with_progress
+        return stages
+
+    monkeypatch.setattr(high_level, "_rust_stage_configs", configure_stages)
     source = (
         "<b1>The observation confirms that </b1><b3>red</b3><b5> depends on</b5>",
         "<b1>the temperature of the sample and </b1><b3>blue</b3>"
@@ -324,12 +358,16 @@ def test_continuation_preserves_styles_on_both_pages(translate_pdf):
     assert len(translator.requests) == 1
     assert request_inputs(translator.requests[0]) == [" ".join(source)]
     with pymupdf.open(output) as pdf:
+        sizes = []
         for page, (word, color) in zip(
             pdf, [("rouge", 0xFF0000), ("bleu", 0x0000FF)], strict=True
         ):
-            assert any(
-                span["text"].strip() == word and span["color"] == color
+            span = next(
+                span
                 for block in page.get_text("dict")["blocks"]
                 for line in block["lines"]
                 for span in line["spans"]
+                if span["text"].strip() == word and span["color"] == color
             )
+            sizes.append(span["size"])
+        assert sizes[0] == pytest.approx(sizes[1])
